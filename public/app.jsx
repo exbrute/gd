@@ -142,15 +142,15 @@ function SolveSection({
   );
 }
 
-function ProfileSection({ solvedCount, availableRequests, isPro }) {
+function ProfileSection({ solvedCount, availableRequests, isPro, displayName }) {
   return (
     <section className="profile-card glass">
       <div className="profile-main">
         <div className="profile-avatar">
-          <span>У</span>
+          <span>{(displayName || "У")[0].toUpperCase()}</span>
         </div>
         <div>
-          <div className="profile-name">Ученик</div>
+          <div className="profile-name">{displayName}</div>
           <div className="profile-tag">{isPro ? "Pro-подписка" : "Бесплатный план"}</div>
         </div>
       </div>
@@ -237,6 +237,7 @@ function AppShell() {
   const [availableRequests, setAvailableRequests] = useState("...");
   const [isPro, setIsPro] = useState(false);
   const [telegramId, setTelegramId] = useState(null);
+  const [displayName, setDisplayName] = useState("Ученик");
 
   useEffect(() => {
     setMode(defaultDetailMode);
@@ -270,6 +271,7 @@ function AppShell() {
     }
 
     setTelegramId(uid);
+    if (fname) setDisplayName(fname);
     fetch(`/api/user?telegram_id=${uid}&username=${encodeURIComponent(uname)}&first_name=${encodeURIComponent(fname)}`, {
         headers: { "X-Telegram-Init-Data": getInitData() }
       })
@@ -438,6 +440,7 @@ function AppShell() {
               solvedCount={solvedCount}
               availableRequests={availableRequests}
               isPro={isPro}
+              displayName={displayName}
             />
           )}
 
