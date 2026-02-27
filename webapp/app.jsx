@@ -244,19 +244,45 @@ function AppShell() {
 
   useEffect(() => {
     const tgUser = getTelegramUser();
-    if (tgUser?.id) {
-      setTelegramId(tgUser.id);
-      fetch(`/api/user?telegram_id=${tgUser.id}&username=${encodeURIComponent(tgUser.username || "")}&first_name=${encodeURIComponent(tgUser.first_name || "")}`, {
-          headers: { "X-Telegram-Init-Data": getInitData() }
-        })
-        .then(r => r.json())
-        .then(data => {
-          setAvailableRequests(data.remaining);
-          setIsPro(data.is_pro);
-          setSolvedCount(data.requests_used || 0);
-        })
-        .catch(() => {});
+    let uid = tgUser?.id;
+    let uname = tgUser?.username || "";
+    let fname = tgUser?.first_name || "";
+
+    if (!uid) {
+      try {
+        const initData = getInitData();
+        if (initData) {
+          const params = new URLSearchParams(initData);
+          const userJson = params.get("user");
+          if (userJson) {
+            const parsed = JSON.parse(decodeURIComponent(userJson));
+            uid = parsed.id;
+            uname = parsed.username || "";
+            fname = parsed.first_name || "";
+          }
+        }
+      } catch {}
     }
+
+    if (!uid) {
+      setAvailableRequests(10);
+      return;
+    }
+
+    setTelegramId(uid);
+    fetch(`/api/user?telegram_id=${uid}&username=${encodeURIComponent(uname)}&first_name=${encodeURIComponent(fname)}`, {
+        headers: { "X-Telegram-Init-Data": getInitData() }
+      })
+      .then(r => { if (!r.ok) throw new Error(r.status); return r.json(); })
+      .then(data => {
+        setAvailableRequests(data.remaining);
+        setIsPro(data.is_pro);
+        setSolvedCount(data.requests_used || 0);
+      })
+      .catch((err) => {
+        console.error("Failed to load user:", err);
+        setAvailableRequests(10);
+      });
   }, []);
 
   const handleFileChange = (file) => {
