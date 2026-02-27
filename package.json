@@ -1,0 +1,15 @@
+{
+  "name": "gdz-bot",
+  "version": "1.0.0",
+  "description": "Telegram mini app for solving homework tasks using OpenAI + FastAPI backend",
+  "private": true,
+  "scripts": {
+    "dev": ".\\.venv\\Scripts\\python.exe -m uvicorn backend.main:app --reload",
+    "start": "npm run dev",
+    "bot": ".\\.venv\\Scripts\\python.exe -m backend.bot"
+  },
+  "dependencies": {},
+  "devDependencies": {}
+}
+
+
