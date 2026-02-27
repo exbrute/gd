@@ -274,39 +274,34 @@ function AppShell() {
   const [telegramId, setTelegramId] = useState(null);
   const [displayName, setDisplayName] = useState("Ученик");
 
-  const tgUser = useTelegramUser();
-
   useEffect(() => {
     setMode(defaultDetailMode);
   }, [defaultDetailMode]);
 
   useEffect(() => {
-    if (!tgUser?.id) return;
-
-    const uid = tgUser.id;
-    const uname = tgUser.username || "";
-    const fname = tgUser.first_name || "";
-
-    setTelegramId(uid);
-    if (fname) setDisplayName(fname);
-    else if (uname) setDisplayName(uname);
-
-    fetch(`/api/user?telegram_id=${uid}&username=${encodeURIComponent(uname)}&first_name=${encodeURIComponent(fname)}`, {
-        headers: { "X-Telegram-Init-Data": getInitData() }
+    const init = () => {
+      const initData = getInitData();
+      fetch("/api/me", {
+        headers: { "X-Telegram-Init-Data": initData }
       })
-      .then(r => { if (!r.ok) throw new Error(r.status); return r.json(); })
-      .then(data => {
-        setAvailableRequests(data.remaining);
-        setIsPro(data.is_pro);
-        setSolvedCount(data.requests_used || 0);
-        if (data.first_name) setDisplayName(data.first_name);
-        else if (data.username) setDisplayName(data.username);
-      })
-      .catch((err) => {
-        console.error("Failed to load user:", err);
-        setAvailableRequests(10);
-      });
-  }, [tgUser]);
+        .then(r => r.json())
+        .then(data => {
+          if (data.telegram_id) setTelegramId(data.telegram_id);
+          if (data.first_name) setDisplayName(data.first_name);
+          else if (data.username) setDisplayName(data.username);
+          setAvailableRequests(data.remaining);
+          setIsPro(data.is_pro || false);
+          setSolvedCount(data.requests_used || 0);
+        })
+        .catch(() => setAvailableRequests(10));
+    };
+
+    if (window.Telegram?.WebApp?.initData) {
+      init();
+    } else {
+      setTimeout(init, 500);
+    }
+  }, []);
 
   const handleFileChange = (file) => {
     if (!file) return;

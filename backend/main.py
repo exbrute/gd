@@ -239,6 +239,45 @@ def prepare_math_for_render(text: str) -> str:
     return t
 
 
+@app.get("/api/me")
+async def api_me(x_telegram_init_data: str | None = Header(None)):
+    """Extract user from initData server-side, register and return profile."""
+    tg_user = require_telegram(x_telegram_init_data)
+    uid = tg_user.get("id")
+
+    if not uid and x_telegram_init_data:
+        try:
+            params = parse_qs(x_telegram_init_data, keep_blank_values=True)
+            user_json = params.get("user", [""])[0]
+            if user_json:
+                import json as _json
+                parsed = _json.loads(user_json)
+                uid = parsed.get("id")
+                tg_user = parsed
+        except Exception:
+            pass
+
+    if not uid:
+        return {"telegram_id": None, "first_name": "", "username": "", "is_pro": False,
+                "remaining": 10, "requests_used": 0, "allowed": True, "reason": "anonymous"}
+
+    username = tg_user.get("username", "")
+    first_name = tg_user.get("first_name", "")
+    user = await get_or_create_user(int(uid), username, first_name)
+    limits = await check_can_solve(int(uid))
+    return {
+        "telegram_id": user["telegram_id"],
+        "username": user["username"],
+        "first_name": user["first_name"],
+        "is_pro": bool(user["is_pro"]),
+        "is_banned": bool(user["is_banned"]),
+        "requests_used": user["requests_used"],
+        "remaining": limits["remaining"],
+        "allowed": limits["allowed"],
+        "reason": limits["reason"],
+    }
+
+
 @app.get("/api/user")
 async def api_user(
     telegram_id: int = Query(...),
