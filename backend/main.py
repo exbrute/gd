@@ -131,7 +131,10 @@ MODEL_FOR_REQUESTS = OPENROUTER_MODEL if OPENROUTER_API_KEY else OPENAI_MODEL_DE
 
 @asynccontextmanager
 async def lifespan(application: FastAPI):
-    await init_db()
+    try:
+        await init_db()
+    except Exception as e:
+        print(f"[WARN] DB init failed: {e}")
     yield
 
 app = FastAPI(title="GDZ Bot API", lifespan=lifespan)

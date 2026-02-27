@@ -2,8 +2,9 @@ import aiosqlite
 import os
 import time
 
-DB_PATH = os.path.join(os.path.dirname(__file__), "..", "data.db")
-DB_PATH = os.path.abspath(DB_PATH)
+_is_vercel = bool(os.getenv("VERCEL"))
+_local_db = os.path.join(os.path.dirname(__file__), "..", "data.db")
+DB_PATH = "/tmp/data.db" if _is_vercel else os.path.abspath(_local_db)
 
 FREE_LIMIT = 10
 FREE_COOLDOWN_DAYS = 7
