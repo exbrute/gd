@@ -1,19 +1,7 @@
 {
-  "builds": [
-    {
-      "src": "api/index.py",
-      "use": "@vercel/python"
-    },
-    {
-      "src": "webapp/**",
-      "use": "@vercel/static"
-    }
-  ],
-  "routes": [
-    { "src": "/static/(.*)", "dest": "/webapp/$1" },
-    { "src": "/solution/(.*)", "dest": "/api/index.py" },
-    { "src": "/admin(.*)", "dest": "/api/index.py" },
-    { "src": "/api/(.*)", "dest": "/api/index.py" },
-    { "src": "/(.*)", "dest": "/api/index.py" }
+  "rewrites": [
+    { "source": "/api/(.*)", "destination": "/api/index.py" },
+    { "source": "/solution/:path*", "destination": "/api/index.py" },
+    { "source": "/admin", "destination": "/api/index.py" }
   ]
 }
