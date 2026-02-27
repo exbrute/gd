@@ -1,43 +1,177 @@
-import aiosqlite
 import os
 import time
 
-_is_vercel = bool(os.getenv("VERCEL"))
-_local_db = os.path.join(os.path.dirname(__file__), "..", "data.db")
-DB_PATH = "/tmp/data.db" if _is_vercel else os.path.abspath(_local_db)
+import aiosqlite
+
+DB_PATH = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "data.db"))
+TURSO_URL = os.getenv("TURSO_URL", "").strip()
+TURSO_AUTH_TOKEN = os.getenv("TURSO_AUTH_TOKEN", "").strip()
 
 FREE_LIMIT = 10
 FREE_COOLDOWN_DAYS = 7
 
+_use_turso = bool(TURSO_URL and TURSO_AUTH_TOKEN)
 
-async def get_db() -> aiosqlite.Connection:
-    db = await aiosqlite.connect(DB_PATH)
-    db.row_factory = aiosqlite.Row
-    return db
+CREATE_TABLE_SQL = """
+    CREATE TABLE IF NOT EXISTS users (
+        telegram_id   INTEGER PRIMARY KEY,
+        username      TEXT DEFAULT '',
+        first_name    TEXT DEFAULT '',
+        is_banned     INTEGER DEFAULT 0,
+        is_pro        INTEGER DEFAULT 0,
+        requests_used INTEGER DEFAULT 0,
+        period_start  REAL DEFAULT 0,
+        created_at    REAL DEFAULT 0
+    )
+"""
 
+
+# ─── Turso (libsql) client ───────────────────────────────────────
+_turso_client = None
+
+
+def _get_turso_client():
+    global _turso_client
+    if _turso_client is None:
+        import libsql_client
+        _turso_client = libsql_client.create_client_sync(
+            url=TURSO_URL,
+            auth_token=TURSO_AUTH_TOKEN,
+        )
+    return _turso_client
+
+
+def _turso_execute(sql: str, args=None):
+    client = _get_turso_client()
+    return client.execute(sql, args or [])
+
+
+def _turso_row_to_dict(rs, row) -> dict:
+    return {col: row[i] for i, col in enumerate(rs.columns)}
+
+
+# ─── Unified helpers ─────────────────────────────────────────────
 
 async def init_db():
-    db = await get_db()
+    if _use_turso:
+        _turso_execute(CREATE_TABLE_SQL)
+        return
+    db = await aiosqlite.connect(DB_PATH)
     try:
-        await db.executescript("""
-            CREATE TABLE IF NOT EXISTS users (
-                telegram_id   INTEGER PRIMARY KEY,
-                username      TEXT DEFAULT '',
-                first_name    TEXT DEFAULT '',
-                is_banned     INTEGER DEFAULT 0,
-                is_pro        INTEGER DEFAULT 0,
-                requests_used INTEGER DEFAULT 0,
-                period_start  REAL DEFAULT 0,
-                created_at    REAL DEFAULT 0
-            );
-        """)
+        await db.executescript(CREATE_TABLE_SQL)
         await db.commit()
     finally:
         await db.close()
 
 
 async def get_or_create_user(telegram_id: int, username: str = "", first_name: str = "") -> dict:
-    db = await get_db()
+    if _use_turso:
+        return _turso_get_or_create_user(telegram_id, username, first_name)
+    return await _sqlite_get_or_create_user(telegram_id, username, first_name)
+
+
+async def check_can_solve(telegram_id: int) -> dict:
+    user = await get_or_create_user(telegram_id)
+    if user["is_banned"]:
+        return {"allowed": False, "remaining": 0, "reason": "banned"}
+    if user["is_pro"]:
+        return {"allowed": True, "remaining": "unlimited", "reason": "pro"}
+
+    now = time.time()
+    period_start = user["period_start"] or now
+    if now - period_start >= FREE_COOLDOWN_DAYS * 86400:
+        if _use_turso:
+            _turso_execute("UPDATE users SET requests_used = 0, period_start = ? WHERE telegram_id = ?", [now, telegram_id])
+        else:
+            db = await aiosqlite.connect(DB_PATH)
+            try:
+                await db.execute("UPDATE users SET requests_used = 0, period_start = ? WHERE telegram_id = ?", (now, telegram_id))
+                await db.commit()
+            finally:
+                await db.close()
+        user["requests_used"] = 0
+
+    remaining = max(0, FREE_LIMIT - user["requests_used"])
+    if remaining <= 0:
+        return {"allowed": False, "remaining": 0, "reason": "limit"}
+    return {"allowed": True, "remaining": remaining, "reason": "free"}
+
+
+async def increment_usage(telegram_id: int):
+    sql = "UPDATE users SET requests_used = requests_used + 1 WHERE telegram_id = ?"
+    if _use_turso:
+        _turso_execute(sql, [telegram_id])
+        return
+    db = await aiosqlite.connect(DB_PATH)
+    try:
+        await db.execute(sql, (telegram_id,))
+        await db.commit()
+    finally:
+        await db.close()
+
+
+async def get_all_users() -> list[dict]:
+    sql = "SELECT * FROM users ORDER BY created_at DESC"
+    if _use_turso:
+        rs = _turso_execute(sql)
+        return [_turso_row_to_dict(rs, r) for r in rs.rows]
+    db = await aiosqlite.connect(DB_PATH)
+    db.row_factory = aiosqlite.Row
+    try:
+        cur = await db.execute(sql)
+        rows = await cur.fetchall()
+        return [dict(r) for r in rows]
+    finally:
+        await db.close()
+
+
+async def set_user_pro(telegram_id: int, is_pro: bool):
+    sql = "UPDATE users SET is_pro = ? WHERE telegram_id = ?"
+    val = 1 if is_pro else 0
+    if _use_turso:
+        _turso_execute(sql, [val, telegram_id])
+        return
+    db = await aiosqlite.connect(DB_PATH)
+    try:
+        await db.execute(sql, (val, telegram_id))
+        await db.commit()
+    finally:
+        await db.close()
+
+
+async def set_user_banned(telegram_id: int, is_banned: bool):
+    sql = "UPDATE users SET is_banned = ? WHERE telegram_id = ?"
+    val = 1 if is_banned else 0
+    if _use_turso:
+        _turso_execute(sql, [val, telegram_id])
+        return
+    db = await aiosqlite.connect(DB_PATH)
+    try:
+        await db.execute(sql, (val, telegram_id))
+        await db.commit()
+    finally:
+        await db.close()
+
+
+async def reset_user_requests(telegram_id: int):
+    sql = "UPDATE users SET requests_used = 0, period_start = ? WHERE telegram_id = ?"
+    now = time.time()
+    if _use_turso:
+        _turso_execute(sql, [now, telegram_id])
+        return
+    db = await aiosqlite.connect(DB_PATH)
+    try:
+        await db.execute(sql, (now, telegram_id))
+        await db.commit()
+    finally:
+        await db.close()
+
+
+# ─── SQLite-only helpers ─────────────────────────────────────────
+
+async def _sqlite_get_or_create_user(telegram_id: int, username: str, first_name: str) -> dict:
+    db = await aiosqlite.connect(DB_PATH)
+    db.row_factory = aiosqlite.Row
     try:
         cur = await db.execute("SELECT * FROM users WHERE telegram_id = ?", (telegram_id,))
         row = await cur.fetchone()
@@ -64,92 +198,24 @@ async def get_or_create_user(telegram_id: int, username: str = "", first_name: s
         await db.close()
 
 
-async def check_can_solve(telegram_id: int) -> dict:
-    """Returns {allowed: bool, remaining: int|'unlimited', reason: str}."""
-    user = await get_or_create_user(telegram_id)
+# ─── Turso-only helpers ──────────────────────────────────────────
 
-    if user["is_banned"]:
-        return {"allowed": False, "remaining": 0, "reason": "banned"}
-
-    if user["is_pro"]:
-        return {"allowed": True, "remaining": "unlimited", "reason": "pro"}
-
-    now = time.time()
-    period_start = user["period_start"] or now
-    seconds_in_period = FREE_COOLDOWN_DAYS * 86400
-
-    if now - period_start >= seconds_in_period:
-        db = await get_db()
-        try:
-            await db.execute(
-                "UPDATE users SET requests_used = 0, period_start = ? WHERE telegram_id = ?",
-                (now, telegram_id),
+def _turso_get_or_create_user(telegram_id: int, username: str, first_name: str) -> dict:
+    rs = _turso_execute("SELECT * FROM users WHERE telegram_id = ?", [telegram_id])
+    if rs.rows:
+        user = _turso_row_to_dict(rs, rs.rows[0])
+        if username or first_name:
+            _turso_execute(
+                "UPDATE users SET username = ?, first_name = ? WHERE telegram_id = ?",
+                [username or user["username"], first_name or user["first_name"], telegram_id],
             )
-            await db.commit()
-        finally:
-            await db.close()
-        user["requests_used"] = 0
-
-    remaining = max(0, FREE_LIMIT - user["requests_used"])
-    if remaining <= 0:
-        return {"allowed": False, "remaining": 0, "reason": "limit"}
-
-    return {"allowed": True, "remaining": remaining, "reason": "free"}
-
-
-async def increment_usage(telegram_id: int):
-    db = await get_db()
-    try:
-        await db.execute(
-            "UPDATE users SET requests_used = requests_used + 1 WHERE telegram_id = ?",
-            (telegram_id,),
-        )
-        await db.commit()
-    finally:
-        await db.close()
-
-
-async def get_all_users() -> list[dict]:
-    db = await get_db()
-    try:
-        cur = await db.execute("SELECT * FROM users ORDER BY created_at DESC")
-        rows = await cur.fetchall()
-        return [dict(r) for r in rows]
-    finally:
-        await db.close()
-
-
-async def set_user_pro(telegram_id: int, is_pro: bool):
-    db = await get_db()
-    try:
-        await db.execute(
-            "UPDATE users SET is_pro = ? WHERE telegram_id = ?",
-            (1 if is_pro else 0, telegram_id),
-        )
-        await db.commit()
-    finally:
-        await db.close()
-
-
-async def set_user_banned(telegram_id: int, is_banned: bool):
-    db = await get_db()
-    try:
-        await db.execute(
-            "UPDATE users SET is_banned = ? WHERE telegram_id = ?",
-            (1 if is_banned else 0, telegram_id),
-        )
-        await db.commit()
-    finally:
-        await db.close()
-
-
-async def reset_user_requests(telegram_id: int):
-    db = await get_db()
-    try:
-        await db.execute(
-            "UPDATE users SET requests_used = 0, period_start = ? WHERE telegram_id = ?",
-            (time.time(), telegram_id),
-        )
-        await db.commit()
-    finally:
-        await db.close()
+            rs = _turso_execute("SELECT * FROM users WHERE telegram_id = ?", [telegram_id])
+            user = _turso_row_to_dict(rs, rs.rows[0])
+        return user
+    now = time.time()
+    _turso_execute(
+        "INSERT INTO users (telegram_id, username, first_name, created_at, period_start) VALUES (?, ?, ?, ?, ?)",
+        [telegram_id, username, first_name, now, now],
+    )
+    rs = _turso_execute("SELECT * FROM users WHERE telegram_id = ?", [telegram_id])
+    return _turso_row_to_dict(rs, rs.rows[0])
