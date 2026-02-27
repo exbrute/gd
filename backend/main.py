@@ -203,7 +203,7 @@ def _find_brace_end(s: str, start: int) -> int:
 
 
 def _fix_bare_latex_commands(text: str) -> str:
-    """Модель иногда пишет frac, eq, mathbb без \ — восстанавливаем."""
+    """Модель иногда пишет frac, eq, mathbb без backslash — восстанавливаем."""
     if not text:
         return text
     t = text
@@ -384,7 +384,7 @@ async def solve(req: SolveRequest, x_telegram_init_data: str | None = Header(Non
 
 
 def _normalize_math_delimiters(content: str) -> str:
-    """Убирает лишние слеши перед ( ) [ ] — любой \\+ перед delimiter → один \."""
+    r"""Убирает лишние слеши перед ( ) [ ] — любой \\+ перед delimiter → один \."""
     t = content
     t = re.sub(r"[\\]+\(", r"\\(", t)
     t = re.sub(r"[\\]+\)", r"\\)", t)
