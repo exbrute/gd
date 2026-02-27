@@ -256,7 +256,7 @@ function AppShell() {
           const params = new URLSearchParams(initData);
           const userJson = params.get("user");
           if (userJson) {
-            const parsed = JSON.parse(decodeURIComponent(userJson));
+            const parsed = JSON.parse(userJson);
             uid = parsed.id;
             uname = parsed.username || "";
             fname = parsed.first_name || "";
@@ -266,12 +266,24 @@ function AppShell() {
     }
 
     if (!uid) {
+      try {
+        const unsafe = window.Telegram?.WebApp?.initDataUnsafe;
+        if (unsafe?.user?.id) {
+          uid = unsafe.user.id;
+          uname = unsafe.user.username || "";
+          fname = unsafe.user.first_name || "";
+        }
+      } catch {}
+    }
+
+    if (fname) setDisplayName(fname);
+
+    if (!uid) {
       setAvailableRequests(10);
       return;
     }
 
     setTelegramId(uid);
-    if (fname) setDisplayName(fname);
     fetch(`/api/user?telegram_id=${uid}&username=${encodeURIComponent(uname)}&first_name=${encodeURIComponent(fname)}`, {
         headers: { "X-Telegram-Init-Data": getInitData() }
       })
@@ -280,6 +292,8 @@ function AppShell() {
         setAvailableRequests(data.remaining);
         setIsPro(data.is_pro);
         setSolvedCount(data.requests_used || 0);
+        if (data.first_name) setDisplayName(data.first_name);
+        else if (data.username) setDisplayName(data.username);
       })
       .catch((err) => {
         console.error("Failed to load user:", err);
