@@ -2,6 +2,7 @@ import os
 import time
 
 import aiosqlite
+import httpx
 
 DB_PATH = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "data.db"))
 TURSO_URL = os.getenv("TURSO_URL", "").strip()
@@ -12,42 +13,66 @@ FREE_COOLDOWN_DAYS = 7
 
 _use_turso = bool(TURSO_URL and TURSO_AUTH_TOKEN)
 
-CREATE_TABLE_SQL = """
-    CREATE TABLE IF NOT EXISTS users (
-        telegram_id   INTEGER PRIMARY KEY,
-        username      TEXT DEFAULT '',
-        first_name    TEXT DEFAULT '',
-        is_banned     INTEGER DEFAULT 0,
-        is_pro        INTEGER DEFAULT 0,
-        requests_used INTEGER DEFAULT 0,
-        period_start  REAL DEFAULT 0,
-        created_at    REAL DEFAULT 0
+if _use_turso:
+    _turso_http_url = TURSO_URL.replace("libsql://", "https://")
+
+CREATE_TABLE_SQL = """CREATE TABLE IF NOT EXISTS users (
+    telegram_id   INTEGER PRIMARY KEY,
+    username      TEXT DEFAULT '',
+    first_name    TEXT DEFAULT '',
+    is_banned     INTEGER DEFAULT 0,
+    is_pro        INTEGER DEFAULT 0,
+    requests_used INTEGER DEFAULT 0,
+    period_start  REAL DEFAULT 0,
+    created_at    REAL DEFAULT 0
+)"""
+
+
+# ─── Turso HTTP API ──────────────────────────────────────────────
+
+def _turso_execute(sql: str, args=None) -> dict:
+    """Execute SQL via Turso HTTP API. Returns {columns: [...], rows: [...]}."""
+    stmts = []
+    stmt = {"sql": sql}
+    if args:
+        stmt["args"] = [{"type": "integer", "value": str(a)} if isinstance(a, int)
+                        else {"type": "float", "value": str(a)} if isinstance(a, float)
+                        else {"type": "text", "value": str(a)} if a is not None
+                        else {"type": "null"}
+                        for a in args]
+    stmts.append({"type": "execute", "stmt": stmt})
+    stmts.append({"type": "close"})
+
+    resp = httpx.post(
+        f"{_turso_http_url}/v2/pipeline",
+        json={"requests": stmts},
+        headers={"Authorization": f"Bearer {TURSO_AUTH_TOKEN}"},
+        timeout=10,
     )
-"""
+    resp.raise_for_status()
+    data = resp.json()
+    result = data.get("results", [{}])[0]
+    if result.get("type") == "error":
+        raise RuntimeError(result["error"]["message"])
+    response = result.get("response", {}).get("result", {})
+    cols = [c["name"] for c in response.get("cols", [])]
+    rows_raw = response.get("rows", [])
+    rows = []
+    for row in rows_raw:
+        rows.append([cell.get("value") for cell in row])
+    return {"columns": cols, "rows": rows}
 
 
-# ─── Turso (libsql) client ───────────────────────────────────────
-_turso_client = None
-
-
-def _get_turso_client():
-    global _turso_client
-    if _turso_client is None:
-        import libsql_client
-        _turso_client = libsql_client.create_client_sync(
-            url=TURSO_URL,
-            auth_token=TURSO_AUTH_TOKEN,
-        )
-    return _turso_client
-
-
-def _turso_execute(sql: str, args=None):
-    client = _get_turso_client()
-    return client.execute(sql, args or [])
-
-
-def _turso_row_to_dict(rs, row) -> dict:
-    return {col: row[i] for i, col in enumerate(rs.columns)}
+def _turso_row_to_dict(result: dict, row: list) -> dict:
+    d = {}
+    for i, col in enumerate(result["columns"]):
+        val = row[i]
+        if col in ("telegram_id", "is_banned", "is_pro", "requests_used"):
+            val = int(val) if val is not None else 0
+        elif col in ("period_start", "created_at"):
+            val = float(val) if val is not None else 0.0
+        d[col] = val
+    return d
 
 
 # ─── Unified helpers ─────────────────────────────────────────────
@@ -114,7 +139,7 @@ async def get_all_users() -> list[dict]:
     sql = "SELECT * FROM users ORDER BY created_at DESC"
     if _use_turso:
         rs = _turso_execute(sql)
-        return [_turso_row_to_dict(rs, r) for r in rs.rows]
+        return [_turso_row_to_dict(rs, r) for r in rs["rows"]]
     db = await aiosqlite.connect(DB_PATH)
     db.row_factory = aiosqlite.Row
     try:
@@ -167,7 +192,7 @@ async def reset_user_requests(telegram_id: int):
         await db.close()
 
 
-# ─── SQLite-only helpers ─────────────────────────────────────────
+# ─── SQLite-only ─────────────────────────────────────────────────
 
 async def _sqlite_get_or_create_user(telegram_id: int, username: str, first_name: str) -> dict:
     db = await aiosqlite.connect(DB_PATH)
@@ -198,19 +223,19 @@ async def _sqlite_get_or_create_user(telegram_id: int, username: str, first_name
         await db.close()
 
 
-# ─── Turso-only helpers ──────────────────────────────────────────
+# ─── Turso-only ──────────────────────────────────────────────────
 
 def _turso_get_or_create_user(telegram_id: int, username: str, first_name: str) -> dict:
     rs = _turso_execute("SELECT * FROM users WHERE telegram_id = ?", [telegram_id])
-    if rs.rows:
-        user = _turso_row_to_dict(rs, rs.rows[0])
+    if rs["rows"]:
+        user = _turso_row_to_dict(rs, rs["rows"][0])
         if username or first_name:
             _turso_execute(
                 "UPDATE users SET username = ?, first_name = ? WHERE telegram_id = ?",
                 [username or user["username"], first_name or user["first_name"], telegram_id],
             )
             rs = _turso_execute("SELECT * FROM users WHERE telegram_id = ?", [telegram_id])
-            user = _turso_row_to_dict(rs, rs.rows[0])
+            user = _turso_row_to_dict(rs, rs["rows"][0])
         return user
     now = time.time()
     _turso_execute(
@@ -218,4 +243,4 @@ def _turso_get_or_create_user(telegram_id: int, username: str, first_name: str) 
         [telegram_id, username, first_name, now, now],
     )
     rs = _turso_execute("SELECT * FROM users WHERE telegram_id = ?", [telegram_id])
-    return _turso_row_to_dict(rs, rs.rows[0])
+    return _turso_row_to_dict(rs, rs["rows"][0])
