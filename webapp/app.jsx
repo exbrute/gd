@@ -43,6 +43,41 @@ function useTelegramTheme() {
   }, []);
 }
 
+function useTelegramUser() {
+  const [tgUser, setTgUser] = useState(null);
+
+  useEffect(() => {
+    function tryGet() {
+      const u = window.Telegram?.WebApp?.initDataUnsafe?.user;
+      if (u?.id) return u;
+      try {
+        const raw = window.Telegram?.WebApp?.initData;
+        if (raw) {
+          const p = new URLSearchParams(raw);
+          const j = p.get("user");
+          if (j) return JSON.parse(j);
+        }
+      } catch {}
+      return null;
+    }
+
+    const user = tryGet();
+    if (user?.id) { setTgUser(user); return; }
+
+    let tries = 0;
+    const interval = setInterval(() => {
+      tries++;
+      const u = tryGet();
+      if (u?.id) { setTgUser(u); clearInterval(interval); }
+      if (tries > 20) clearInterval(interval);
+    }, 200);
+
+    return () => clearInterval(interval);
+  }, []);
+
+  return tgUser;
+}
+
 function Status({ text, tone }) {
   if (!text) return null;
   return (
@@ -239,51 +274,23 @@ function AppShell() {
   const [telegramId, setTelegramId] = useState(null);
   const [displayName, setDisplayName] = useState("Ученик");
 
+  const tgUser = useTelegramUser();
+
   useEffect(() => {
     setMode(defaultDetailMode);
   }, [defaultDetailMode]);
 
   useEffect(() => {
-    const tgUser = getTelegramUser();
-    let uid = tgUser?.id;
-    let uname = tgUser?.username || "";
-    let fname = tgUser?.first_name || "";
+    if (!tgUser?.id) return;
 
-    if (!uid) {
-      try {
-        const initData = getInitData();
-        if (initData) {
-          const params = new URLSearchParams(initData);
-          const userJson = params.get("user");
-          if (userJson) {
-            const parsed = JSON.parse(userJson);
-            uid = parsed.id;
-            uname = parsed.username || "";
-            fname = parsed.first_name || "";
-          }
-        }
-      } catch {}
-    }
-
-    if (!uid) {
-      try {
-        const unsafe = window.Telegram?.WebApp?.initDataUnsafe;
-        if (unsafe?.user?.id) {
-          uid = unsafe.user.id;
-          uname = unsafe.user.username || "";
-          fname = unsafe.user.first_name || "";
-        }
-      } catch {}
-    }
-
-    if (fname) setDisplayName(fname);
-
-    if (!uid) {
-      setAvailableRequests(10);
-      return;
-    }
+    const uid = tgUser.id;
+    const uname = tgUser.username || "";
+    const fname = tgUser.first_name || "";
 
     setTelegramId(uid);
+    if (fname) setDisplayName(fname);
+    else if (uname) setDisplayName(uname);
+
     fetch(`/api/user?telegram_id=${uid}&username=${encodeURIComponent(uname)}&first_name=${encodeURIComponent(fname)}`, {
         headers: { "X-Telegram-Init-Data": getInitData() }
       })
@@ -299,7 +306,7 @@ function AppShell() {
         console.error("Failed to load user:", err);
         setAvailableRequests(10);
       });
-  }, []);
+  }, [tgUser]);
 
   const handleFileChange = (file) => {
     if (!file) return;
