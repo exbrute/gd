@@ -68,15 +68,11 @@ def validate_init_data(init_data: str) -> dict | None:
 
 
 def require_telegram(init_data: str | None) -> dict:
-    """Validate initData header, raise 403 if invalid. Returns user dict."""
-    if not TELEGRAM_BOT_TOKEN:
+    """Validate initData header. Returns user dict or empty dict if can't validate."""
+    if not TELEGRAM_BOT_TOKEN or not init_data:
         return {}
-    if not init_data:
-        raise HTTPException(status_code=403, detail="Missing Telegram authorization")
     user = validate_init_data(init_data)
-    if user is None:
-        raise HTTPException(status_code=403, detail="Invalid Telegram authorization")
-    return user
+    return user if user is not None else {}
 
 OPENAI_MODEL_DEFAULT = os.getenv("OPENAI_MODEL", "gpt-4o-mini")
 OPENAI_BASE_URL = os.getenv("OPENAI_BASE_URL", "").strip() or None
