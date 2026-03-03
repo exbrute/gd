@@ -3,7 +3,6 @@ import os
 import time
 
 import aiosqlite
-import httpx
 
 DB_PATH = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "data.db"))
 TURSO_URL = os.getenv("TURSO_URL", "").strip()
@@ -29,38 +28,20 @@ CREATE_TABLE_SQL = """CREATE TABLE IF NOT EXISTS users (
 )"""
 
 
-# ─── Turso HTTP API ──────────────────────────────────────────────
+# ─── Turso via libsql-client ─────────────────────────────────────
+# Uses HTTP for https:// (works with regional *.aws-*.turso.io)
 
 def _turso_execute(sql: str, args=None) -> dict:
-    """Execute SQL via Turso HTTP API. Returns {columns: [...], rows: [...]}."""
-    stmts = []
-    stmt = {"sql": sql}
-    if args:
-        stmt["args"] = [{"type": "integer", "value": str(a)} if isinstance(a, int)
-                        else {"type": "float", "value": str(a)} if isinstance(a, float)
-                        else {"type": "text", "value": str(a)} if a is not None
-                        else {"type": "null"}
-                        for a in args]
-    stmts.append({"type": "execute", "stmt": stmt})
-    stmts.append({"type": "close"})
-
-    resp = httpx.post(
-        f"{_turso_http_url}/v2/pipeline",
-        json={"requests": stmts},
-        headers={"Authorization": f"Bearer {TURSO_AUTH_TOKEN}"},
-        timeout=10,
-    )
-    resp.raise_for_status()
-    data = resp.json()
-    result = data.get("results", [{}])[0]
-    if result.get("type") == "error":
-        raise RuntimeError(result["error"]["message"])
-    response = result.get("response", {}).get("result", {})
-    cols = [c["name"] for c in response.get("cols", [])]
-    rows_raw = response.get("rows", [])
-    rows = []
-    for row in rows_raw:
-        rows.append([cell.get("value") for cell in row])
+    """Execute SQL via libsql_client. Returns {columns: [...], rows: [...]}."""
+    import libsql_client
+    url = _turso_http_url
+    with libsql_client.create_client_sync(url=url, auth_token=TURSO_AUTH_TOKEN) as client:
+        if args:
+            rs = client.execute(sql, args)
+        else:
+            rs = client.execute(sql)
+    cols = list(rs.columns) if rs.columns else []
+    rows = [list(r) for r in rs.rows]
     return {"columns": cols, "rows": rows}
 
 
