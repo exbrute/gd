@@ -180,6 +180,7 @@ class SolutionCreateResponse(BaseModel):
 
 class PayCreateRequest(BaseModel):
     method: Literal["sbp", "cryptobot"]
+    init_data: Optional[str] = None  # fallback если заголовок X-Telegram-Init-Data обрезается прокси
 
 
 def _serve_index() -> FileResponse:
@@ -692,7 +693,8 @@ async def pay_create(
     Создаёт платёж на подписку Pro.
     Методы: cryptobot (Crypto Pay API), sbp — в разработке.
     """
-    tg_user = require_telegram(x_telegram_init_data)
+    init_data = (x_telegram_init_data or "").strip() or (req.init_data or "").strip()
+    tg_user = require_telegram(init_data or None)
     telegram_id = tg_user.get("id")
     if not telegram_id:
         raise HTTPException(status_code=401, detail="Требуется авторизация Telegram")

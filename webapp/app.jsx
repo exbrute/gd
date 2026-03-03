@@ -103,12 +103,12 @@ function pluralRequests(n) {
 }
 
 function GeneratingScreen({ status, availableRequests, isPro }) {
-  const [stepIndex, setStepIndex] = useState(0);
+  const [visibleCount, setVisibleCount] = useState(1);
   const showLowLimit = !isPro && typeof availableRequests === "number" && availableRequests <= 2;
 
   useEffect(() => {
     const t = setInterval(() => {
-      setStepIndex((i) => (i + 1) % GENERATION_STEPS.length);
+      setVisibleCount((n) => (n >= GENERATION_STEPS.length ? 1 : n + 1));
     }, 2200);
     return () => clearInterval(t);
   }, []);
@@ -132,10 +132,10 @@ function GeneratingScreen({ status, availableRequests, isPro }) {
       )}
       <div className="generating-card glass">
         <div className="generating-steps">
-          {GENERATION_STEPS.map((step, i) => (
+          {GENERATION_STEPS.slice(0, visibleCount).map((step, i) => (
             <div
               key={i}
-              className={`generating-step ${i === stepIndex ? "generating-step--active" : ""}`}
+              className={`generating-step ${i === visibleCount - 1 ? "generating-step--active" : ""}`}
             >
               <span className="generating-step-emoji">{step.emoji}</span>
               <span className="generating-step-text">{step.text}</span>
@@ -320,6 +320,11 @@ function PaySection({ isPro, onRefresh }) {
   const [status, setStatus] = useState("");
 
   const handlePay = async (methodId) => {
+    const initData = getInitData();
+    if (!initData) {
+      setError("Откройте приложение из меню бота в Telegram — не через браузер.");
+      return;
+    }
     setLoading(true);
     setError("");
     setStatus("");
@@ -327,7 +332,10 @@ function PaySection({ isPro, onRefresh }) {
       const resp = await fetch("/api/pay/create", {
         method: "POST",
         headers: authHeaders(),
-        body: JSON.stringify({ method: methodId }),
+        body: JSON.stringify({
+          method: methodId,
+          init_data: initData || undefined,
+        }),
       });
       const data = await resp.json().catch(() => ({}));
       if (!resp.ok) throw new Error(data.detail || "Ошибка создания платежа");
