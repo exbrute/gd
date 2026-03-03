@@ -695,9 +695,10 @@ async def _crypto_pay_create_invoice(telegram_id: int) -> dict:
 
 
 def _get_init_data(request: Request, body_init_data: str | None = None) -> str:
-    """Извлекает initData из заголовка или тела запроса."""
+    """Извлекает initData из заголовка, query, или тела запроса."""
     h = request.headers.get("X-Telegram-Init-Data") or request.headers.get("x-telegram-init-data")
-    return (h or "").strip() or (body_init_data or "").strip() or ""
+    q = request.query_params.get("init_data")
+    return (h or "").strip() or (q or "").strip() or (body_init_data or "").strip() or ""
 
 
 @app.post("/api/pay/create")

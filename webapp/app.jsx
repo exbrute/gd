@@ -25,9 +25,13 @@ function readInitDataFromTelegram() {
 
 function readInitDataFromUrl() {
   try {
-    const hash = (window.location.hash || "").replace(/^#/, "");
-    const params = new URLSearchParams(hash || window.location.search);
-    return params.get("tgWebAppData") || params.get("initData") || "";
+    const hash = (window.location.hash || "").replace(/^#/, "").trim();
+    const search = (window.location.search || "").replace(/^\?/, "").trim();
+    const params = new URLSearchParams(hash || search);
+    const fromParam = params.get("tgWebAppData") || params.get("initData") || params.get("tgWebAppDataRaw");
+    if (fromParam) return fromParam;
+    if (hash && hash.includes("hash=") && hash.includes("auth_date=")) return hash;
+    return "";
   } catch { return ""; }
 }
 
@@ -67,8 +71,13 @@ function useTelegramTheme() {
       twa.expand();
       twa.setHeaderColor("#0b1120");
       twa.setBackgroundColor("#020617");
-      const data = twa.initData;
-      if (data) sessionStorage.setItem(INIT_DATA_KEY, data);
+      const save = () => {
+        const data = twa.initData || readInitDataFromUrl();
+        if (data) sessionStorage.setItem(INIT_DATA_KEY, data);
+      };
+      save();
+      const t = setInterval(save, 300);
+      return () => clearInterval(t);
     }
   }, []);
 }
@@ -267,7 +276,7 @@ function ProfileSection({
       {!telegramId && (
         <div className="status status--error" style={{ marginBottom: 16 }}>
           <span className="status-dot" />
-          <span>Откройте приложение из бота Telegram (Меню → TestAI), чтобы учитывались запросы и счётчик.</span>
+          <span>Нажмите кнопку «📚 Открыть TestAI» под сообщением бота (отправьте /start, затем кнопку).</span>
         </div>
       )}
       <div className="profile-main">
@@ -509,7 +518,8 @@ function AppShell() {
   useEffect(() => {
     const init = () => {
       const initData = getInitData();
-      return fetch("/api/me", {
+      const url = initData ? `/api/me?init_data=${encodeURIComponent(initData)}` : "/api/me";
+      return fetch(url, {
         headers: { "X-Telegram-Init-Data": initData }
       })
         .then(r => r.json())
@@ -532,15 +542,15 @@ function AppShell() {
 
     init().then((uid) => {
       if (!uid && window.Telegram?.WebApp) {
-        setTimeout(init, 800);
-        setTimeout(init, 2000);
+        [800, 2000, 4000].forEach((ms) => setTimeout(init, ms));
       }
     });
   }, []);
 
   const refreshMe = useCallback(() => {
     const initData = getInitData();
-    fetch("/api/me", { headers: { "X-Telegram-Init-Data": initData } })
+    const url = initData ? `/api/me?init_data=${encodeURIComponent(initData)}` : "/api/me";
+    fetch(url, { headers: { "X-Telegram-Init-Data": initData } })
       .then(r => r.json())
       .then(data => {
         if (data.telegram_id) {

@@ -3,7 +3,7 @@ import logging
 
 from aiogram import Bot, Dispatcher
 from aiogram.filters import CommandStart
-from aiogram.types import KeyboardButton, Message, ReplyKeyboardMarkup, WebAppInfo
+from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup, Message, WebAppInfo
 
 from .config import TELEGRAM_BOT_TOKEN, WEBAPP_URL, ensure_config
 
@@ -24,22 +24,21 @@ async def main() -> None:
 
     @dp.message(CommandStart())
     async def cmd_start(message: Message) -> None:
-        keyboard = ReplyKeyboardMarkup(
-            keyboard=[
+        keyboard = InlineKeyboardMarkup(
+            inline_keyboard=[
                 [
-                    KeyboardButton(
-                        text="Открыть мини‑приложение",
+                    InlineKeyboardButton(
+                        text="📚 Открыть TestAI",
                         web_app=WebAppInfo(url=WEBAPP_URL),
                     )
                 ]
-            ],
-            resize_keyboard=True,
+            ]
         )
 
         welcome_text = (
             "Привет! 👋\n\n"
             "Это умное мини‑приложение для решения задач, тестов и примеров. "
-            "Нажми кнопку «Открыть мини‑приложение», чтобы загрузить текст или фото задания "
+            "Нажми кнопку ниже, чтобы загрузить текст или фото задания "
             "и получить аккуратное решение с оформленными формулами."
         )
 
