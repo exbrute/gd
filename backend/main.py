@@ -173,6 +173,7 @@ class SolveRequest(BaseModel):
     detail: Literal["short", "detailed"] = "short"
     image_base64: Optional[str] = None
     telegram_id: Optional[int] = None
+    init_data: Optional[str] = None
 
 
 class SolveResponse(BaseModel):
@@ -335,8 +336,9 @@ async def api_user(
 
 
 @app.post("/api/solve", response_model=SolveResponse)
-async def solve(req: SolveRequest, x_telegram_init_data: str | None = Header(None)) -> SolveResponse:
-    tg_user = require_telegram(x_telegram_init_data)
+async def solve(req: SolveRequest, request: Request) -> SolveResponse:
+    init_data = _get_init_data(request, req.init_data)
+    tg_user = require_telegram(init_data or None)
     if tg_user.get("id") and req.telegram_id and tg_user["id"] != req.telegram_id:
         raise HTTPException(status_code=403, detail="User ID mismatch")
     if not req.telegram_id and tg_user.get("id"):

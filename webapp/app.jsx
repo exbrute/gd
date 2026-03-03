@@ -1,4 +1,4 @@
-const { useEffect, useState } = React;
+const { useCallback, useEffect, useState } = React;
 
 const MODES = {
   short: "Кратко",
@@ -256,6 +256,7 @@ function ProfileSection({
   isPro,
   displayName,
   daysUntilUpdate,
+  telegramId,
 }) {
   const used = Math.min(solvedCount, FREE_LIMIT);
   const remaining = isPro ? null : (typeof availableRequests === "number" ? availableRequests : FREE_LIMIT - used);
@@ -263,6 +264,12 @@ function ProfileSection({
 
   return (
     <section className="profile-card glass">
+      {!telegramId && (
+        <div className="status status--error" style={{ marginBottom: 16 }}>
+          <span className="status-dot" />
+          <span>Откройте приложение из бота Telegram (Меню → TestAI), чтобы учитывались запросы и счётчик.</span>
+        </div>
+      )}
       <div className="profile-main">
         <div className="profile-avatar">
           <span>{(displayName || "У")[0].toUpperCase()}</span>
@@ -502,28 +509,58 @@ function AppShell() {
   useEffect(() => {
     const init = () => {
       const initData = getInitData();
-      fetch("/api/me", {
+      return fetch("/api/me", {
         headers: { "X-Telegram-Init-Data": initData }
       })
         .then(r => r.json())
         .then(data => {
-          if (data.telegram_id) setTelegramId(data.telegram_id);
+          if (data.telegram_id) {
+            setTelegramId(data.telegram_id);
+            setSolvedCount(data.requests_used || 0);
+            if (typeof data.days_until_update === "number") setDaysUntilUpdate(data.days_until_update);
+          } else {
+            setSolvedCount(0);
+          }
+          setAvailableRequests(data.remaining ?? 10);
+          setIsPro(data.is_pro || false);
           if (data.first_name) setDisplayName(data.first_name);
           else if (data.username) setDisplayName(data.username);
-          setAvailableRequests(data.remaining);
-          setIsPro(data.is_pro || false);
-          setSolvedCount(data.requests_used || 0);
-          if (typeof data.days_until_update === "number") setDaysUntilUpdate(data.days_until_update);
+          return data.telegram_id;
         })
-        .catch(() => setAvailableRequests(10));
+        .catch(() => { setAvailableRequests(10); return null; });
     };
 
-    if (window.Telegram?.WebApp?.initData) {
-      init();
-    } else {
-      setTimeout(init, 500);
-    }
+    init().then((uid) => {
+      if (!uid && window.Telegram?.WebApp) {
+        setTimeout(init, 800);
+        setTimeout(init, 2000);
+      }
+    });
   }, []);
+
+  const refreshMe = useCallback(() => {
+    const initData = getInitData();
+    fetch("/api/me", { headers: { "X-Telegram-Init-Data": initData } })
+      .then(r => r.json())
+      .then(data => {
+        if (data.telegram_id) {
+          setTelegramId(data.telegram_id);
+          setSolvedCount(data.requests_used || 0);
+          if (typeof data.days_until_update === "number") setDaysUntilUpdate(data.days_until_update);
+        } else {
+          setSolvedCount(0);
+        }
+        setAvailableRequests(data.remaining ?? 10);
+        setIsPro(data.is_pro || false);
+        if (data.first_name) setDisplayName(data.first_name);
+        else if (data.username) setDisplayName(data.username);
+      })
+      .catch(() => {});
+  }, []);
+
+  useEffect(() => {
+    if (effectiveTab === "profile") refreshMe();
+  }, [effectiveTab, refreshMe]);
 
   const handleFileChange = (file) => {
     if (!file) return;
@@ -570,6 +607,7 @@ function AppShell() {
           detail: mode === "short" ? "short" : "detailed",
           image_base64: imageBase64,
           telegram_id: telegramId,
+          init_data: getInitData() || undefined,
         }),
       });
 
@@ -642,9 +680,6 @@ function AppShell() {
             <span className="hero-tag">Тесты</span>
             <span className="hero-tag">Контрольные</span>
           </div>
-          <div className={`user-chip ${isPro ? "user-chip--pro" : ""}`}>
-            {isPro ? "PRO — безлимит" : `Осталось запросов: ${availableRequests}`}
-          </div>
         </section>
 
         <nav className="tab-bar glass">
@@ -684,11 +719,12 @@ function AppShell() {
               isPro={isPro}
               displayName={displayName}
               daysUntilUpdate={daysUntilUpdate}
+              telegramId={telegramId}
             />
           )}
 
           {effectiveTab === "pay" && (
-            <PaySection isPro={isPro} onRefresh={() => {}} />
+            <PaySection isPro={isPro} onRefresh={refreshMe} />
           )}
 
           {effectiveTab === "settings" && (
