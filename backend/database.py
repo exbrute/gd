@@ -27,6 +27,12 @@ CREATE_TABLE_SQL = """CREATE TABLE IF NOT EXISTS users (
     created_at    REAL DEFAULT 0
 )"""
 
+CREATE_SOLUTIONS_TABLE_SQL = """CREATE TABLE IF NOT EXISTS solutions (
+    id TEXT PRIMARY KEY,
+    content TEXT NOT NULL,
+    created_at REAL DEFAULT 0
+)"""
+
 
 # ─── Turso via libsql-client ─────────────────────────────────────
 # Uses HTTP for https:// (works with regional *.aws-*.turso.io)
@@ -62,11 +68,56 @@ def _turso_row_to_dict(result: dict, row: list) -> dict:
 async def init_db():
     if _use_turso:
         _turso_execute(CREATE_TABLE_SQL)
+        _turso_execute(CREATE_SOLUTIONS_TABLE_SQL)
         return
     db = await aiosqlite.connect(DB_PATH)
     try:
         await db.executescript(CREATE_TABLE_SQL)
+        await db.executescript(CREATE_SOLUTIONS_TABLE_SQL)
         await db.commit()
+    finally:
+        await db.close()
+
+
+async def save_solution(sid: str, content: str) -> None:
+    """Сохраняет решение в БД (для Vercel — между разными инстансами)."""
+    now = time.time()
+    if _use_turso:
+        _turso_execute(
+            "INSERT OR REPLACE INTO solutions (id, content, created_at) VALUES (?, ?, ?)",
+            [sid, content, now],
+        )
+        return
+    db = await aiosqlite.connect(DB_PATH)
+    try:
+        await db.execute(
+            "INSERT OR REPLACE INTO solutions (id, content, created_at) VALUES (?, ?, ?)",
+            (sid, content, now),
+        )
+        await db.commit()
+    finally:
+        await db.close()
+
+
+async def get_and_delete_solution(sid: str) -> str | None:
+    """Извлекает решение и удаляет его (одноразовая страница)."""
+    if _use_turso:
+        rs = _turso_execute("SELECT content FROM solutions WHERE id = ?", [sid])
+        if not rs["rows"]:
+            return None
+        content = rs["rows"][0][0]
+        _turso_execute("DELETE FROM solutions WHERE id = ?", [sid])
+        return content
+    db = await aiosqlite.connect(DB_PATH)
+    try:
+        cur = await db.execute("SELECT content FROM solutions WHERE id = ?", (sid,))
+        row = await cur.fetchone()
+        if not row:
+            return None
+        content = row[0]
+        await db.execute("DELETE FROM solutions WHERE id = ?", (sid,))
+        await db.commit()
+        return content
     finally:
         await db.close()
 

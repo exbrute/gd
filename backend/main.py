@@ -24,6 +24,7 @@ from pydantic import BaseModel
 from .database import (
     init_db, get_or_create_user, check_can_solve, increment_usage,
     get_all_users, set_user_pro, set_user_banned, reset_user_requests,
+    save_solution, get_and_delete_solution,
 )
 
 load_dotenv()
@@ -193,8 +194,7 @@ static_dir = os.path.abspath(static_dir)
 if os.path.isdir(static_dir):
     app.mount("/static", StaticFiles(directory=static_dir), name="static")
 
-# Одноразовые страницы решений (id → ответ)
-_solution_store: dict[str, str] = {}
+# Решения хранятся в БД (Turso/SQLite) — на Vercel память не общая между инстансами
 
 
 class SolveRequest(BaseModel):
@@ -212,6 +212,8 @@ class SolveResponse(BaseModel):
 
 class SolutionCreateRequest(BaseModel):
     answer: str
+    init_data: Optional[str] = None
+    auth_token: Optional[str] = None
 
 
 class SolutionCreateResponse(BaseModel):
@@ -687,17 +689,20 @@ def _build_solution_html(content: str, solution_id: str = "") -> str:
 
 
 @app.post("/api/solution", response_model=SolutionCreateResponse)
-async def create_solution(req: SolutionCreateRequest, x_telegram_init_data: str | None = Header(None)) -> SolutionCreateResponse:
-    require_telegram(x_telegram_init_data)
+async def create_solution(req: SolutionCreateRequest, request: Request) -> SolutionCreateResponse:
+    init_data = _get_init_data(request, req.init_data)
+    auth_token = _get_auth_token(request, req.auth_token)
+    if not init_data and not auth_token:
+        raise HTTPException(status_code=401, detail="Требуется авторизация")
     sid = str(uuid.uuid4())
-    _solution_store[sid] = (req.answer or "").strip()
+    await save_solution(sid, (req.answer or "").strip())
     return SolutionCreateResponse(url=f"/solution/{sid}")
 
 
 @app.get("/solution/{solution_id}", response_class=HTMLResponse)
 async def get_solution_page(solution_id: str) -> HTMLResponse:
     """Отдаёт одноразовую HTML-страницу с решением (KaTeX рендерит формулы на клиенте)."""
-    content = _solution_store.pop(solution_id, "")
+    content = await get_and_delete_solution(solution_id)
     if not content:
         raise HTTPException(status_code=404, detail="Страница просмотрена или не существует")
     return HTMLResponse(content=_build_solution_html(content, solution_id))

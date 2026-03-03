@@ -388,7 +388,7 @@ function PaySection({ isPro, onRefresh }) {
     try {
       const resp = await fetch("/api/pay/create", {
         method: "POST",
-        headers: authHeaders(),
+        headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           method: methodId,
           init_data: initData || undefined,
@@ -675,7 +675,7 @@ function AppShell() {
     try {
       const resp = await fetch("/api/solve", {
         method: "POST",
-        headers: authHeaders(),
+        headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           text: text.trim() || null,
           detail: mode === "short" ? "short" : "detailed",
@@ -698,8 +698,12 @@ function AppShell() {
 
       const solResp = await fetch("/api/solution", {
         method: "POST",
-        headers: authHeaders(),
-        body: JSON.stringify({ answer: answerText }),
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          answer: answerText,
+          init_data: getInitData() || undefined,
+          auth_token: getAuthToken() || undefined,
+        }),
       });
       if (!solResp.ok) throw new Error("Не удалось создать страницу решения.");
       const { url } = await solResp.json();
