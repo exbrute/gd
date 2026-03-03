@@ -92,12 +92,21 @@ def require_telegram(init_data: str | None) -> dict:
     return user if user is not None else {}
 
 
+def _jwt_secret() -> str:
+    """JWT требует ключ >= 32 байт для HS256. Короткие секреты дополняем через SHA256."""
+    s = AUTH_SECRET
+    if not s:
+        return ""
+    return hashlib.sha256(s.encode()).hexdigest() if len(s.encode()) < 32 else s
+
+
 def _verify_auth_token(token: str) -> dict | None:
     """Verify JWT from bot /auth. Returns user dict {id, first_name, username} or None."""
-    if not AUTH_SECRET or not token:
+    secret = _jwt_secret()
+    if not secret or not token:
         return None
     try:
-        payload = jwt.decode(token, AUTH_SECRET, algorithms=["HS256"])
+        payload = jwt.decode(token, secret, algorithms=["HS256"])
         uid = payload.get("telegram_id") or payload.get("sub")
         if not uid:
             return None

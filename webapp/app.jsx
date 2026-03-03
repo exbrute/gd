@@ -544,34 +544,34 @@ function AppShell() {
   useEffect(() => {
     const params = new URLSearchParams(window.location.search || "");
     const tgAuth = params.get("tg_auth");
-    if (tgAuth) {
-      fetch("/api/auth/telegram", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ token: tgAuth }),
+    if (!tgAuth) return;
+    fetch("/api/auth/telegram", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ token: tgAuth }),
+    })
+      .then(r => r.json())
+      .then(data => {
+        if (data.auth_token) {
+          setAuthToken(data.auth_token);
+          setTelegramId(data.telegram_id);
+          setSolvedCount(data.requests_used || 0);
+          setAvailableRequests(data.remaining ?? 10);
+          setIsPro(data.is_pro || false);
+          setDisplayName(data.first_name || data.username || "Ученик");
+          setDebugInfo(null);
+          if (typeof data.days_until_update === "number") setDaysUntilUpdate(data.days_until_update);
+        }
       })
-        .then(r => r.json())
-        .then(data => {
-          if (data.auth_token) {
-            setAuthToken(data.auth_token);
-            setTelegramId(data.telegram_id);
-            setSolvedCount(data.requests_used || 0);
-            setAvailableRequests(data.remaining ?? 10);
-            setIsPro(data.is_pro || false);
-            setDisplayName(data.first_name || data.username || "Ученик");
-            setDebugInfo(null);
-            if (typeof data.days_until_update === "number") setDaysUntilUpdate(data.days_until_update);
-          }
-        })
-        .finally(() => {
-          const u = new URL(window.location.href);
-          u.searchParams.delete("tg_auth");
-          window.history.replaceState({}, "", u.pathname + (u.search || "") + (u.hash || ""));
-        });
-    }
+      .finally(() => {
+        const u = new URL(window.location.href);
+        u.searchParams.delete("tg_auth");
+        window.history.replaceState({}, "", u.pathname + (u.search || "") + (u.hash || ""));
+      });
   }, []);
 
   useEffect(() => {
+    if (new URLSearchParams(window.location.search || "").get("tg_auth")) return;
     const init = () => {
       const initData = getInitData();
       const authTok = getAuthToken();

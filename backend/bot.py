@@ -1,4 +1,5 @@
 import asyncio
+import hashlib
 import logging
 import os
 import time
@@ -12,7 +13,8 @@ from .config import TELEGRAM_BOT_TOKEN, WEBAPP_URL, ensure_config
 
 load_dotenv = __import__("dotenv").load_dotenv
 load_dotenv()
-AUTH_SECRET = os.getenv("AUTH_SECRET", "").strip() or os.getenv("ADMIN_SECRET", "").strip()
+_raw = os.getenv("AUTH_SECRET", "").strip() or os.getenv("ADMIN_SECRET", "").strip()
+AUTH_SECRET = hashlib.sha256(_raw.encode()).hexdigest() if _raw and len(_raw.encode()) < 32 else (_raw or "")
 
 
 logging.basicConfig(level=logging.INFO)
