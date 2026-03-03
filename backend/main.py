@@ -896,7 +896,7 @@ async def admin_panel(secret: str = Query(""), debug: bool = Query(False)):
             "<h1>403 Forbidden</h1><p>ADMIN_SECRET не задан на сервере (проверьте env vars в Vercel).</p>",
             status_code=403,
         )
-    if secret != ADMIN_SECRET:
+    if secret.strip() != ADMIN_SECRET.strip():
         hint = ""
         if debug:
             hint = f"<p>secret из URL: {repr(secret[:20])}... | ADMIN_SECRET длина: {len(ADMIN_SECRET)}</p>"
