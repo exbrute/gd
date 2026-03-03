@@ -39,7 +39,12 @@ PRO_PRICE_CURRENCY = os.getenv("PRO_PRICE_CURRENCY", "RUB").strip()  # RUB, USD,
 
 
 def validate_init_data(init_data: str) -> dict | None:
-    """Validate Telegram WebApp initData. Returns parsed user dict or None."""
+    """
+    Validate Telegram WebApp initData.
+    https://core.telegram.org/bots/webapps#validating-data-received-from-the-web-app
+    secret_key = HMAC_SHA256(bot_token, "WebAppData")
+    hash = HMAC_SHA256(secret_key, data_check_string)
+    """
     if not TELEGRAM_BOT_TOKEN or not init_data:
         return None
     try:
@@ -57,10 +62,14 @@ def validate_init_data(init_data: str) -> dict | None:
             if key == "hash":
                 continue
             check_pairs.append(f"{key}={parsed[key][0]}")
-        check_string = "\n".join(check_pairs)
+        data_check_string = "\n".join(check_pairs)
 
-        secret_key = hmac.new(b"WebAppData", TELEGRAM_BOT_TOKEN.encode(), hashlib.sha256).digest()
-        computed_hash = hmac.new(secret_key, check_string.encode(), hashlib.sha256).hexdigest()
+        secret_key = hmac.new(
+            TELEGRAM_BOT_TOKEN.encode(), b"WebAppData", hashlib.sha256
+        ).digest()
+        computed_hash = hmac.new(
+            secret_key, data_check_string.encode(), hashlib.sha256
+        ).hexdigest()
 
         if not hmac.compare_digest(computed_hash, received_hash):
             return None
@@ -259,14 +268,15 @@ def prepare_math_for_render(text: str) -> str:
 
 
 @app.get("/api/me")
-async def api_me(x_telegram_init_data: str | None = Header(None)):
+async def api_me(request: Request):
     """Extract user from initData server-side, register and return profile."""
-    tg_user = require_telegram(x_telegram_init_data)
+    init_data = _get_init_data(request)
+    tg_user = require_telegram(init_data or None)
     uid = tg_user.get("id")
 
-    if not uid and x_telegram_init_data:
+    if not uid and init_data:
         try:
-            params = parse_qs(x_telegram_init_data, keep_blank_values=True)
+            params = parse_qs(init_data, keep_blank_values=True)
             user_json = params.get("user", [""])[0]
             if user_json:
                 import json as _json
@@ -530,7 +540,6 @@ def _build_solution_html(content: str, solution_id: str = "") -> str:
     .pro-card-list li:last-child{{ margin-bottom:0; }}
     .pro-card-btn{{ display:inline-flex; align-items:center; gap:6px; padding:10px 18px; border-radius:12px; border:none; background:linear-gradient(135deg,#f97316,#fb923c); color:#0f172a; font:600 14px Inter,sans-serif; cursor:pointer; text-decoration:none; transition:transform .2s, box-shadow .2s; box-shadow:0 8px 24px rgba(249,115,22,.35); }}
     .pro-card-btn:hover{{ transform:translateY(-1px); box-shadow:0 12px 32px rgba(249,115,22,.45); }}
-    .pro-card-time{{ position:absolute; bottom:14px; right:18px; font-size:11px; color:#64748b; }}
 
     @keyframes fadeDown{{ from{{ opacity:0; transform:translateY(-12px); }} to{{ opacity:1; transform:translateY(0); }} }}
     @keyframes fadeUp{{ from{{ opacity:0; transform:translateY(16px); }} to{{ opacity:1; transform:translateY(0); }} }}
@@ -567,7 +576,6 @@ def _build_solution_html(content: str, solution_id: str = "") -> str:
         <li>✨ Разные способы решения</li>
       </ul>
       <a href="/#pay" class="pro-card-btn">🔥 Перейти на PRO</a>
-      <span class="pro-card-time">{datetime.now().strftime("%H:%M")}</span>
     </div>
 
     <div class="solution-card">
@@ -684,16 +692,19 @@ async def _crypto_pay_create_invoice(telegram_id: int) -> dict:
     return {"url": url, "invoice_id": inv.get("invoice_id")}
 
 
+def _get_init_data(request: Request, body_init_data: str | None = None) -> str:
+    """Извлекает initData из заголовка или тела запроса."""
+    h = request.headers.get("X-Telegram-Init-Data") or request.headers.get("x-telegram-init-data")
+    return (h or "").strip() or (body_init_data or "").strip() or ""
+
+
 @app.post("/api/pay/create")
-async def pay_create(
-    req: PayCreateRequest,
-    x_telegram_init_data: str | None = Header(None),
-):
+async def pay_create(req: PayCreateRequest, request: Request):
     """
     Создаёт платёж на подписку Pro.
     Методы: cryptobot (Crypto Pay API), sbp — в разработке.
     """
-    init_data = (x_telegram_init_data or "").strip() or (req.init_data or "").strip()
+    init_data = _get_init_data(request, req.init_data)
     tg_user = require_telegram(init_data or None)
     telegram_id = tg_user.get("id")
     if not telegram_id:

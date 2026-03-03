@@ -709,26 +709,23 @@ body {
   gap: 10px;
 }
 
+.generating-steps--single {
+  min-height: 42px;
+  align-items: center;
+}
+
 .generating-step {
   display: flex;
   align-items: center;
   gap: 10px;
   padding: 8px 0;
   opacity: 0;
-  transform: translateY(-8px);
-  animation: generating-step-in 0.4s ease-out forwards;
-}
-
-.generating-step--active {
+  transform: translateY(4px);
+  animation: generating-step-fade 0.5s ease-out forwards;
   color: #e5e7eb;
 }
 
-.generating-step:not(.generating-step--active) {
-  opacity: 0.6;
-  color: #9ca3af;
-}
-
-@keyframes generating-step-in {
+@keyframes generating-step-fade {
   to {
     opacity: 1;
     transform: translateY(0);

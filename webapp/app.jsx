@@ -12,16 +12,43 @@ const TABS = {
   settings: { label: "Настройки", icon: "⚙️" },
 };
 
-function getTelegramUser() {
+const INIT_DATA_KEY = "tg_init_data";
+
+function readInitDataFromTelegram() {
   try {
-    return window.Telegram?.WebApp?.initDataUnsafe?.user || null;
-  } catch { return null; }
+    const twa = window.Telegram?.WebApp;
+    if (!twa) return "";
+    twa.ready && twa.ready();
+    return twa.initData || "";
+  } catch { return ""; }
+}
+
+function readInitDataFromUrl() {
+  try {
+    const hash = (window.location.hash || "").replace(/^#/, "");
+    const params = new URLSearchParams(hash || window.location.search);
+    return params.get("tgWebAppData") || params.get("initData") || "";
+  } catch { return ""; }
 }
 
 function getInitData() {
+  let data = readInitDataFromTelegram();
+  if (!data) data = readInitDataFromUrl();
+  if (!data) data = sessionStorage.getItem(INIT_DATA_KEY) || "";
+  if (data) sessionStorage.setItem(INIT_DATA_KEY, data);
+  return data || "";
+}
+
+function getTelegramUser() {
   try {
-    return window.Telegram?.WebApp?.initData || "";
-  } catch { return ""; }
+    const u = window.Telegram?.WebApp?.initDataUnsafe?.user;
+    if (u?.id) return u;
+    const raw = getInitData();
+    if (!raw) return null;
+    const p = new URLSearchParams(raw);
+    const j = p.get("user");
+    return j ? JSON.parse(j) : null;
+  } catch { return null; }
 }
 
 function authHeaders(extra = {}) {
@@ -34,12 +61,14 @@ function authHeaders(extra = {}) {
 
 function useTelegramTheme() {
   useEffect(() => {
-    if (window.Telegram?.WebApp) {
-      const app = window.Telegram.WebApp;
-      app.ready();
-      app.expand();
-      app.setHeaderColor("#0b1120");
-      app.setBackgroundColor("#020617");
+    const twa = window.Telegram?.WebApp;
+    if (twa) {
+      twa.ready();
+      twa.expand();
+      twa.setHeaderColor("#0b1120");
+      twa.setBackgroundColor("#020617");
+      const data = twa.initData;
+      if (data) sessionStorage.setItem(INIT_DATA_KEY, data);
     }
   }, []);
 }
@@ -103,15 +132,17 @@ function pluralRequests(n) {
 }
 
 function GeneratingScreen({ status, availableRequests, isPro }) {
-  const [visibleCount, setVisibleCount] = useState(1);
+  const [stepIndex, setStepIndex] = useState(0);
   const showLowLimit = !isPro && typeof availableRequests === "number" && availableRequests <= 2;
 
   useEffect(() => {
     const t = setInterval(() => {
-      setVisibleCount((n) => (n >= GENERATION_STEPS.length ? 1 : n + 1));
+      setStepIndex((i) => (i + 1) % GENERATION_STEPS.length);
     }, 2200);
     return () => clearInterval(t);
   }, []);
+
+  const step = GENERATION_STEPS[stepIndex];
 
   return (
     <div className="generating-page">
@@ -125,26 +156,15 @@ function GeneratingScreen({ status, availableRequests, isPro }) {
             Чтобы не остаться без решения на контрольной —
           </p>
           <a href="/#pay" className="generating-warning-cta">подключи PRO</a>
-          <span className="generating-warning-time">
-            {new Date().toLocaleTimeString("ru-RU", { hour: "2-digit", minute: "2-digit" })}
-          </span>
         </div>
       )}
       <div className="generating-card glass">
-        <div className="generating-steps">
-          {GENERATION_STEPS.slice(0, visibleCount).map((step, i) => (
-            <div
-              key={i}
-              className={`generating-step ${i === visibleCount - 1 ? "generating-step--active" : ""}`}
-            >
-              <span className="generating-step-emoji">{step.emoji}</span>
-              <span className="generating-step-text">{step.text}</span>
-            </div>
-          ))}
+        <div className="generating-steps generating-steps--single">
+          <div key={stepIndex} className="generating-step">
+            <span className="generating-step-emoji">{step.emoji}</span>
+            <span className="generating-step-text">{step.text}</span>
+          </div>
         </div>
-        <p className="generating-time">
-          {new Date().toLocaleTimeString("ru-RU", { hour: "2-digit", minute: "2-digit" })}
-        </p>
       </div>
     </div>
   );
@@ -278,9 +298,6 @@ function ProfileSection({
               style={{ width: `${Math.min(100, (used / FREE_LIMIT) * 100)}%` }}
             />
           </div>
-          <div className="profile-limit-time">
-            {new Date().toLocaleTimeString("ru-RU", { hour: "2-digit", minute: "2-digit" })}
-          </div>
         </div>
       )}
 
@@ -322,7 +339,7 @@ function PaySection({ isPro, onRefresh }) {
   const handlePay = async (methodId) => {
     const initData = getInitData();
     if (!initData) {
-      setError("Откройте приложение из меню бота в Telegram — не через браузер.");
+      setError("Не удалось получить данные авторизации. Закройте и откройте приложение заново из чата с ботом.");
       return;
     }
     setLoading(true);

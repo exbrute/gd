@@ -119,9 +119,6 @@ function GeneratingScreen({ status }) {
             </div>
           ))}
         </div>
-        <p className="generating-time">
-          {new Date().toLocaleTimeString("ru-RU", { hour: "2-digit", minute: "2-digit" })}
-        </p>
       </div>
     </div>
   );
@@ -254,9 +251,6 @@ function ProfileSection({
               className="profile-limit-bar-fill"
               style={{ width: `${Math.min(100, (used / FREE_LIMIT) * 100)}%` }}
             />
-          </div>
-          <div className="profile-limit-time">
-            {new Date().toLocaleTimeString("ru-RU", { hour: "2-digit", minute: "2-digit" })}
           </div>
         </div>
       )}
