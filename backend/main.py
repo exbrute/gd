@@ -11,6 +11,7 @@ from datetime import datetime
 from typing import Literal, Optional
 from urllib.parse import parse_qs, unquote
 
+import jwt
 from fastapi import FastAPI, HTTPException, Query, Header, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
@@ -28,6 +29,7 @@ from .database import (
 load_dotenv()
 
 ADMIN_SECRET = os.getenv("ADMIN_SECRET", "").strip()
+AUTH_SECRET = os.getenv("AUTH_SECRET", "").strip() or ADMIN_SECRET
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "").strip()
 INIT_DATA_EXPIRY = 86400  # initData valid for 24h
 
@@ -88,6 +90,24 @@ def require_telegram(init_data: str | None) -> dict:
         return {}
     user = validate_init_data(init_data)
     return user if user is not None else {}
+
+
+def _verify_auth_token(token: str) -> dict | None:
+    """Verify JWT from bot /auth. Returns user dict {id, first_name, username} or None."""
+    if not AUTH_SECRET or not token:
+        return None
+    try:
+        payload = jwt.decode(token, AUTH_SECRET, algorithms=["HS256"])
+        uid = payload.get("telegram_id") or payload.get("sub")
+        if not uid:
+            return None
+        return {
+            "id": int(uid),
+            "first_name": payload.get("first_name", ""),
+            "username": payload.get("username", ""),
+        }
+    except Exception:
+        return None
 
 OPENAI_MODEL_DEFAULT = os.getenv("OPENAI_MODEL", "gpt-4o-mini")
 OPENAI_BASE_URL = os.getenv("OPENAI_BASE_URL", "").strip() or None
@@ -174,6 +194,7 @@ class SolveRequest(BaseModel):
     image_base64: Optional[str] = None
     telegram_id: Optional[int] = None
     init_data: Optional[str] = None
+    auth_token: Optional[str] = None
 
 
 class SolveResponse(BaseModel):
@@ -190,7 +211,8 @@ class SolutionCreateResponse(BaseModel):
 
 class PayCreateRequest(BaseModel):
     method: Literal["sbp", "cryptobot"]
-    init_data: Optional[str] = None  # fallback если заголовок X-Telegram-Init-Data обрезается прокси
+    init_data: Optional[str] = None
+    auth_token: Optional[str] = None
 
 
 def _serve_index() -> FileResponse:
@@ -270,10 +292,10 @@ def prepare_math_for_render(text: str) -> str:
 
 @app.get("/api/me")
 async def api_me(request: Request, debug: bool = Query(False)):
-    """Extract user from initData server-side, register and return profile."""
+    """Extract user from initData or X-Auth-Token (JWT from bot /auth)."""
     init_data = _get_init_data(request)
-    tg_user = require_telegram(init_data or None)
-    validation_ok = bool(tg_user and tg_user.get("id"))
+    auth_token = _get_auth_token(request)
+    tg_user = _resolve_user(request, init_data, auth_token)
     uid = tg_user.get("id")
 
     if not uid and init_data:
@@ -296,7 +318,7 @@ async def api_me(request: Request, debug: bool = Query(False)):
             resp["debug"] = {
                 "init_data_received": bool(init_data and len(init_data) > 0),
                 "init_data_len": len(init_data) if init_data else 0,
-                "validation_passed": validation_ok,
+                "auth_token_used": bool(auth_token),
                 "bot_token_set": bool(TELEGRAM_BOT_TOKEN),
             }
         return resp
@@ -347,7 +369,8 @@ async def api_user(
 @app.post("/api/solve", response_model=SolveResponse)
 async def solve(req: SolveRequest, request: Request) -> SolveResponse:
     init_data = _get_init_data(request, req.init_data)
-    tg_user = require_telegram(init_data or None)
+    auth_token = _get_auth_token(request, req.auth_token)
+    tg_user = _resolve_user(request, init_data, auth_token)
     if tg_user.get("id") and req.telegram_id and tg_user["id"] != req.telegram_id:
         raise HTTPException(status_code=403, detail="User ID mismatch")
     if not req.telegram_id and tg_user.get("id"):
@@ -710,6 +733,50 @@ def _get_init_data(request: Request, body_init_data: str | None = None) -> str:
     return (h or "").strip() or (q or "").strip() or (body_init_data or "").strip() or ""
 
 
+def _get_auth_token(request: Request, body_token: str | None = None) -> str:
+    """Извлекает JWT auth token из заголовка или тела."""
+    h = request.headers.get("X-Auth-Token") or request.headers.get("x-auth-token")
+    return (h or "").strip() or (body_token or "").strip() or ""
+
+
+def _resolve_user(request: Request, init_data: str = "", auth_token: str = "") -> dict:
+    """Определяет пользователя: initData (Telegram WebApp) или JWT (от бота /auth)."""
+    if init_data:
+        u = require_telegram(init_data)
+        if u.get("id"):
+            return u
+    if auth_token:
+        u = _verify_auth_token(auth_token)
+        if u:
+            return u
+    return {}
+
+
+class AuthTelegramRequest(BaseModel):
+    token: str
+
+
+@app.post("/api/auth/telegram")
+async def api_auth_telegram(req: AuthTelegramRequest) -> dict:
+    """Обменивает JWT от бота (команда /auth) на данные пользователя."""
+    user = _verify_auth_token(req.token or "")
+    if not user:
+        raise HTTPException(status_code=401, detail="Недействительная ссылка. Отправьте /auth боту заново.")
+    uid = user["id"]
+    u = await get_or_create_user(uid, user.get("username", ""), user.get("first_name", ""))
+    limits = await check_can_solve(uid)
+    return {
+        "telegram_id": uid,
+        "username": u["username"],
+        "first_name": u["first_name"],
+        "is_pro": bool(u["is_pro"]),
+        "requests_used": u["requests_used"],
+        "remaining": limits["remaining"],
+        "days_until_update": limits.get("days_until_update"),
+        "auth_token": req.token,
+    }
+
+
 @app.post("/api/pay/create")
 async def pay_create(req: PayCreateRequest, request: Request):
     """
@@ -717,10 +784,11 @@ async def pay_create(req: PayCreateRequest, request: Request):
     Методы: cryptobot (Crypto Pay API), sbp — в разработке.
     """
     init_data = _get_init_data(request, req.init_data)
-    tg_user = require_telegram(init_data or None)
+    auth_token = _get_auth_token(request, req.auth_token)
+    tg_user = _resolve_user(request, init_data, auth_token)
     telegram_id = tg_user.get("id")
     if not telegram_id:
-        raise HTTPException(status_code=401, detail="Требуется авторизация Telegram")
+        raise HTTPException(status_code=401, detail="Требуется авторизация. Отправьте /auth боту.")
 
     if req.method not in ("sbp", "cryptobot"):
         raise HTTPException(status_code=400, detail="Неизвестный способ оплаты")

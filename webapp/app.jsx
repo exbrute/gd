@@ -13,6 +13,15 @@ const TABS = {
 };
 
 const INIT_DATA_KEY = "tg_init_data";
+const AUTH_TOKEN_KEY = "tg_auth_token";
+
+function getAuthToken() {
+  return sessionStorage.getItem(AUTH_TOKEN_KEY) || "";
+}
+
+function setAuthToken(token) {
+  if (token) sessionStorage.setItem(AUTH_TOKEN_KEY, token);
+}
 
 function readInitDataFromTelegram() {
   try {
@@ -56,11 +65,14 @@ function getTelegramUser() {
 }
 
 function authHeaders(extra = {}) {
-  return {
+  const h = {
     "Content-Type": "application/json",
     "X-Telegram-Init-Data": getInitData(),
     ...extra,
   };
+  const tok = getAuthToken();
+  if (tok) h["X-Auth-Token"] = tok;
+  return h;
 }
 
 function useTelegramTheme() {
@@ -272,7 +284,7 @@ function ProfileSection({
   const remaining = isPro ? null : (typeof availableRequests === "number" ? availableRequests : FREE_LIMIT - used);
   const days = daysUntilUpdate ?? 0;
 
-  let hint = "Нажмите кнопку «📚 Открыть TestAI» под сообщением бота.";
+  let hint = "Отправьте /start боту и нажмите «📚 Открыть TestAI» — счётчик привяжется автоматически.";
   if (debugInfo) {
     const d = debugInfo;
     const parts = [];
@@ -380,6 +392,7 @@ function PaySection({ isPro, onRefresh }) {
         body: JSON.stringify({
           method: methodId,
           init_data: initData || undefined,
+          auth_token: getAuthToken() || undefined,
         }),
       });
       const data = await resp.json().catch(() => ({}));
@@ -529,12 +542,43 @@ function AppShell() {
   };
 
   useEffect(() => {
+    const params = new URLSearchParams(window.location.search || "");
+    const tgAuth = params.get("tg_auth");
+    if (tgAuth) {
+      fetch("/api/auth/telegram", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ token: tgAuth }),
+      })
+        .then(r => r.json())
+        .then(data => {
+          if (data.auth_token) {
+            setAuthToken(data.auth_token);
+            setTelegramId(data.telegram_id);
+            setSolvedCount(data.requests_used || 0);
+            setAvailableRequests(data.remaining ?? 10);
+            setIsPro(data.is_pro || false);
+            setDisplayName(data.first_name || data.username || "Ученик");
+            setDebugInfo(null);
+            if (typeof data.days_until_update === "number") setDaysUntilUpdate(data.days_until_update);
+          }
+        })
+        .finally(() => {
+          const u = new URL(window.location.href);
+          u.searchParams.delete("tg_auth");
+          window.history.replaceState({}, "", u.pathname + (u.search || "") + (u.hash || ""));
+        });
+    }
+  }, []);
+
+  useEffect(() => {
     const init = () => {
       const initData = getInitData();
+      const authTok = getAuthToken();
       const base = initData ? `/api/me?init_data=${encodeURIComponent(initData)}&debug=1` : "/api/me?debug=1";
-      return fetch(base, {
-        headers: { "X-Telegram-Init-Data": initData }
-      })
+      const headers = { "X-Telegram-Init-Data": initData };
+      if (authTok) headers["X-Auth-Token"] = authTok;
+      return fetch(base, { headers })
         .then(r => r.json())
         .then(data => {
           if (data.telegram_id) {
@@ -564,8 +608,11 @@ function AppShell() {
 
   const refreshMe = useCallback(() => {
     const initData = getInitData();
+    const authTok = getAuthToken();
     const base = initData ? `/api/me?init_data=${encodeURIComponent(initData)}&debug=1` : "/api/me?debug=1";
-    fetch(base, { headers: { "X-Telegram-Init-Data": initData } })
+    const headers = { "X-Telegram-Init-Data": initData };
+    if (authTok) headers["X-Auth-Token"] = authTok;
+    fetch(base, { headers })
       .then(r => r.json())
       .then(data => {
         if (data.telegram_id) {
@@ -635,6 +682,7 @@ function AppShell() {
           image_base64: imageBase64,
           telegram_id: telegramId,
           init_data: getInitData() || undefined,
+          auth_token: getAuthToken() || undefined,
         }),
       });
 
