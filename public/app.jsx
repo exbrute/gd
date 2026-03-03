@@ -88,12 +88,40 @@ function Status({ text, tone }) {
   );
 }
 
+const GENERATION_STEPS = [
+  { emoji: "🔍", text: "Распознаём текст..." },
+  { emoji: "📖", text: "Анализируем условие..." },
+  { emoji: "🧠", text: "Строим решение..." },
+  { emoji: "✏️", text: "Проверяем вычисления..." },
+];
+
 function GeneratingScreen({ status }) {
+  const [stepIndex, setStepIndex] = useState(0);
+
+  useEffect(() => {
+    const t = setInterval(() => {
+      setStepIndex((i) => (i + 1) % GENERATION_STEPS.length);
+    }, 2200);
+    return () => clearInterval(t);
+  }, []);
+
   return (
     <div className="generating-page">
       <div className="generating-card glass">
-        <div className="generating-spinner" aria-hidden="true" />
-        <p className="generating-text">{status || "Генерация решения..."}</p>
+        <div className="generating-steps">
+          {GENERATION_STEPS.map((step, i) => (
+            <div
+              key={i}
+              className={`generating-step ${i === stepIndex ? "generating-step--active" : ""}`}
+            >
+              <span className="generating-step-emoji">{step.emoji}</span>
+              <span className="generating-step-text">{step.text}</span>
+            </div>
+          ))}
+        </div>
+        <p className="generating-time">
+          {new Date().toLocaleTimeString("ru-RU", { hour: "2-digit", minute: "2-digit" })}
+        </p>
       </div>
     </div>
   );
@@ -177,7 +205,19 @@ function SolveSection({
   );
 }
 
-function ProfileSection({ solvedCount, availableRequests, isPro, displayName }) {
+const FREE_LIMIT = 10;
+
+function ProfileSection({
+  solvedCount,
+  availableRequests,
+  isPro,
+  displayName,
+  daysUntilUpdate,
+}) {
+  const used = Math.min(solvedCount, FREE_LIMIT);
+  const remaining = isPro ? null : (typeof availableRequests === "number" ? availableRequests : FREE_LIMIT - used);
+  const days = daysUntilUpdate ?? 0;
+
   return (
     <section className="profile-card glass">
       <div className="profile-main">
@@ -189,13 +229,45 @@ function ProfileSection({ solvedCount, availableRequests, isPro, displayName }) 
           <div className="profile-tag">{isPro ? "Pro-подписка" : "Бесплатный план"}</div>
         </div>
       </div>
+
+      {!isPro && (
+        <div className="profile-limit-block">
+          <h3 className="profile-limit-title">
+            <span className="profile-limit-icon" aria-hidden>📊</span>
+            Прогресс-бар использования лимита
+          </h3>
+          <div className="profile-limit-row">
+            <span className="profile-limit-icon" aria-hidden>📅</span>
+            <span>До обновления: {days} {days === 1 ? "день" : days < 5 ? "дня" : "дней"}</span>
+          </div>
+          <div className="profile-limit-row">
+            <span className="profile-limit-icon" aria-hidden>📈</span>
+            <span>Сегодня решено: {solvedCount}</span>
+          </div>
+          <div className="profile-limit-example">
+            <div className="profile-limit-example-label">Пример:</div>
+            <div>Использовано {used} из {FREE_LIMIT}</div>
+            <div>Обновление через {days} {days === 1 ? "день" : days < 5 ? "дня" : "дней"}</div>
+          </div>
+          <div className="profile-limit-bar-wrap">
+            <div
+              className="profile-limit-bar-fill"
+              style={{ width: `${Math.min(100, (used / FREE_LIMIT) * 100)}%` }}
+            />
+          </div>
+          <div className="profile-limit-time">
+            {new Date().toLocaleTimeString("ru-RU", { hour: "2-digit", minute: "2-digit" })}
+          </div>
+        </div>
+      )}
+
       <div className="profile-stats">
         <div className="profile-stat">
           <div className="profile-stat-value">{solvedCount}</div>
           <div className="profile-stat-label">Решено задач</div>
         </div>
         <div className="profile-stat">
-          <div className="profile-stat-value">{isPro ? "∞" : availableRequests}</div>
+          <div className="profile-stat-value">{isPro ? "∞" : remaining}</div>
           <div className="profile-stat-label">Осталось</div>
         </div>
         <div className="profile-stat">
@@ -270,6 +342,7 @@ function AppShell() {
   const [view, setView] = useState("form"); // "form" | "generating"
   const [solvedCount, setSolvedCount] = useState(0);
   const [availableRequests, setAvailableRequests] = useState("...");
+  const [daysUntilUpdate, setDaysUntilUpdate] = useState(7);
   const [isPro, setIsPro] = useState(false);
   const [telegramId, setTelegramId] = useState(null);
   const [displayName, setDisplayName] = useState("Ученик");
@@ -292,6 +365,7 @@ function AppShell() {
           setAvailableRequests(data.remaining);
           setIsPro(data.is_pro || false);
           setSolvedCount(data.requests_used || 0);
+          if (typeof data.days_until_update === "number") setDaysUntilUpdate(data.days_until_update);
         })
         .catch(() => setAvailableRequests(10));
     };
@@ -457,6 +531,7 @@ function AppShell() {
               availableRequests={availableRequests}
               isPro={isPro}
               displayName={displayName}
+              daysUntilUpdate={daysUntilUpdate}
             />
           )}
 

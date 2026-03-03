@@ -8,6 +8,7 @@ const MODES = {
 const TABS = {
   solve: { label: "Задачи", icon: "📚" },
   profile: { label: "Профиль", icon: "👤" },
+  pay: { label: "Pro", icon: "⚡" },
   settings: { label: "Настройки", icon: "⚙️" },
 };
 
@@ -88,12 +89,62 @@ function Status({ text, tone }) {
   );
 }
 
-function GeneratingScreen({ status }) {
+const GENERATION_STEPS = [
+  { emoji: "🔍", text: "Распознаём текст..." },
+  { emoji: "📖", text: "Анализируем условие..." },
+  { emoji: "🧠", text: "Строим решение..." },
+  { emoji: "✏️", text: "Проверяем вычисления..." },
+];
+
+function pluralRequests(n) {
+  if (n === 1) return "запрос";
+  if (n >= 2 && n <= 4) return "запроса";
+  return "запросов";
+}
+
+function GeneratingScreen({ status, availableRequests, isPro }) {
+  const [stepIndex, setStepIndex] = useState(0);
+  const showLowLimit = !isPro && typeof availableRequests === "number" && availableRequests <= 2;
+
+  useEffect(() => {
+    const t = setInterval(() => {
+      setStepIndex((i) => (i + 1) % GENERATION_STEPS.length);
+    }, 2200);
+    return () => clearInterval(t);
+  }, []);
+
   return (
     <div className="generating-page">
+      {showLowLimit && (
+        <div className="generating-warning glass">
+          <div className="generating-warning-top">
+            <span>Осталось {availableRequests} {pluralRequests(availableRequests)}</span>
+            <span className="generating-warning-icon" aria-hidden>⚠️</span>
+          </div>
+          <p className="generating-warning-text">
+            Чтобы не остаться без решения на контрольной —
+          </p>
+          <a href="/#pay" className="generating-warning-cta">подключи PRO</a>
+          <span className="generating-warning-time">
+            {new Date().toLocaleTimeString("ru-RU", { hour: "2-digit", minute: "2-digit" })}
+          </span>
+        </div>
+      )}
       <div className="generating-card glass">
-        <div className="generating-spinner" aria-hidden="true" />
-        <p className="generating-text">{status || "Генерация решения..."}</p>
+        <div className="generating-steps">
+          {GENERATION_STEPS.map((step, i) => (
+            <div
+              key={i}
+              className={`generating-step ${i === stepIndex ? "generating-step--active" : ""}`}
+            >
+              <span className="generating-step-emoji">{step.emoji}</span>
+              <span className="generating-step-text">{step.text}</span>
+            </div>
+          ))}
+        </div>
+        <p className="generating-time">
+          {new Date().toLocaleTimeString("ru-RU", { hour: "2-digit", minute: "2-digit" })}
+        </p>
       </div>
     </div>
   );
@@ -177,7 +228,19 @@ function SolveSection({
   );
 }
 
-function ProfileSection({ solvedCount, availableRequests, isPro, displayName }) {
+const FREE_LIMIT = 10;
+
+function ProfileSection({
+  solvedCount,
+  availableRequests,
+  isPro,
+  displayName,
+  daysUntilUpdate,
+}) {
+  const used = Math.min(solvedCount, FREE_LIMIT);
+  const remaining = isPro ? null : (typeof availableRequests === "number" ? availableRequests : FREE_LIMIT - used);
+  const days = daysUntilUpdate ?? 0;
+
   return (
     <section className="profile-card glass">
       <div className="profile-main">
@@ -186,19 +249,51 @@ function ProfileSection({ solvedCount, availableRequests, isPro, displayName }) 
         </div>
         <div>
           <div className="profile-name">{displayName}</div>
-          <div className="profile-tag">{isPro ? "Pro-подписка" : "Бесплатный план"}</div>
+          <div className={`profile-tag ${isPro ? "profile-tag--pro" : ""}`}>{isPro ? "Pro-подписка" : "Бесплатный план"}</div>
         </div>
       </div>
+
+      {!isPro && (
+        <div className="profile-limit-block">
+          <h3 className="profile-limit-title">
+            <span className="profile-limit-icon" aria-hidden>📊</span>
+            Прогресс-бар использования лимита
+          </h3>
+          <div className="profile-limit-row">
+            <span className="profile-limit-icon" aria-hidden>📅</span>
+            <span>До обновления: {days} {days === 1 ? "день" : days < 5 ? "дня" : "дней"}</span>
+          </div>
+          <div className="profile-limit-row">
+            <span className="profile-limit-icon" aria-hidden>📈</span>
+            <span>Сегодня решено: {solvedCount}</span>
+          </div>
+          <div className="profile-limit-example">
+            <div className="profile-limit-example-label">Пример:</div>
+            <div>Использовано {used} из {FREE_LIMIT}</div>
+            <div>Обновление через {days} {days === 1 ? "день" : days < 5 ? "дня" : "дней"}</div>
+          </div>
+          <div className="profile-limit-bar-wrap">
+            <div
+              className="profile-limit-bar-fill"
+              style={{ width: `${Math.min(100, (used / FREE_LIMIT) * 100)}%` }}
+            />
+          </div>
+          <div className="profile-limit-time">
+            {new Date().toLocaleTimeString("ru-RU", { hour: "2-digit", minute: "2-digit" })}
+          </div>
+        </div>
+      )}
+
       <div className="profile-stats">
         <div className="profile-stat">
           <div className="profile-stat-value">{solvedCount}</div>
           <div className="profile-stat-label">Решено задач</div>
         </div>
-        <div className="profile-stat">
-          <div className="profile-stat-value">{isPro ? "∞" : availableRequests}</div>
+        <div className={`profile-stat ${isPro ? "profile-stat--pro" : ""}`}>
+          <div className="profile-stat-value">{isPro ? "∞" : remaining}</div>
           <div className="profile-stat-label">Осталось</div>
         </div>
-        <div className="profile-stat">
+        <div className={`profile-stat ${isPro ? "profile-stat--pro" : ""}`}>
           <div className="profile-stat-value">{isPro ? "PRO" : "FREE"}</div>
           <div className="profile-stat-label">Подписка</div>
         </div>
@@ -209,6 +304,93 @@ function ProfileSection({ solvedCount, availableRequests, isPro, displayName }) 
           ? "У тебя безлимит — решай сколько хочешь!"
           : "10 запросов каждые 7 дней. Хочешь безлимит? Оформи Pro."}
       </div>
+    </section>
+  );
+}
+
+const PAYMENT_METHODS = [
+  { id: "sbp", label: "СБП", icon: "🏦", desc: "Оплата через Систему быстрых платежей" },
+  { id: "cryptobot", label: "CryptoBot", icon: "₿", desc: "Оплата криптовалютой в Telegram" },
+];
+
+function PaySection({ isPro, onRefresh }) {
+  const [selectedMethod, setSelectedMethod] = useState(null);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState("");
+  const [status, setStatus] = useState("");
+
+  const handlePay = async (methodId) => {
+    setLoading(true);
+    setError("");
+    setStatus("");
+    try {
+      const resp = await fetch("/api/pay/create", {
+        method: "POST",
+        headers: authHeaders(),
+        body: JSON.stringify({ method: methodId }),
+      });
+      const data = await resp.json().catch(() => ({}));
+      if (!resp.ok) throw new Error(data.detail || "Ошибка создания платежа");
+      if (data.url) {
+        window.location.href = data.url;
+      } else if (data.qr_url) {
+        window.open(data.qr_url, "_blank");
+      } else {
+        setStatus("Платёж создан. API интеграция — подключите провайдера.");
+      }
+    } catch (err) {
+      setError(err.message || "Не удалось создать платёж");
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  if (isPro) {
+    return (
+      <section className="pay-card glass">
+        <div className="pay-pro-badge">У тебя уже Pro</div>
+        <p className="pay-pro-text">Безлимит задач уже подключён. Продолжай решать!</p>
+      </section>
+    );
+  }
+
+  return (
+    <section className="pay-card glass">
+      <h2 className="section-title">Оформление Pro</h2>
+      <p className="pay-subtitle">Безлимит задач, приоритетная скорость, решение «как в тетради»</p>
+
+      <div className="pay-methods">
+        {PAYMENT_METHODS.map((m) => (
+          <button
+            key={m.id}
+            type="button"
+            className={`pay-method-btn ${selectedMethod === m.id ? "pay-method-btn--active" : ""}`}
+            onClick={() => setSelectedMethod(m.id)}
+          >
+            <span className="pay-method-icon">{m.icon}</span>
+            <div className="pay-method-info">
+              <span className="pay-method-label">{m.label}</span>
+              <span className="pay-method-desc">{m.desc}</span>
+            </div>
+          </button>
+        ))}
+      </div>
+
+      {error && <div className="status status--error">{error}</div>}
+      {status && <div className="status status--success">{status}</div>}
+
+      <button
+        className="primary-btn"
+        type="button"
+        disabled={!selectedMethod || loading}
+        onClick={() => selectedMethod && handlePay(selectedMethod)}
+      >
+        {loading ? "Создаём платёж..." : selectedMethod
+          ? `Оплатить через ${selectedMethod === "sbp" ? "СБП" : "CryptoBot"}`
+          : "Выберите способ оплаты"}
+      </button>
+
+      <p className="pay-note">CryptoBot подключён. СБП — в разработке.</p>
     </section>
   );
 }
@@ -268,8 +450,10 @@ function AppShell() {
   const [status, setStatus] = useState("");
   const [statusTone, setStatusTone] = useState("neutral");
   const [view, setView] = useState("form"); // "form" | "generating"
+  const [initialTab, setInitialTab] = useState(null);
   const [solvedCount, setSolvedCount] = useState(0);
   const [availableRequests, setAvailableRequests] = useState("...");
+  const [daysUntilUpdate, setDaysUntilUpdate] = useState(7);
   const [isPro, setIsPro] = useState(false);
   const [telegramId, setTelegramId] = useState(null);
   const [displayName, setDisplayName] = useState("Ученик");
@@ -277,6 +461,18 @@ function AppShell() {
   useEffect(() => {
     setMode(defaultDetailMode);
   }, [defaultDetailMode]);
+
+  useEffect(() => {
+    const hash = (window.location.hash || "").replace("#", "");
+    const path = (window.location.pathname || "").replace(/\/$/, "") || "/";
+    if (hash === "pay" || path === "/pay") setInitialTab("pay");
+  }, []);
+
+  const effectiveTab = initialTab !== null ? initialTab : activeTab;
+  const setEffectiveTab = (t) => {
+    setInitialTab(null);
+    setActiveTab(t);
+  };
 
   useEffect(() => {
     const init = () => {
@@ -292,6 +488,7 @@ function AppShell() {
           setAvailableRequests(data.remaining);
           setIsPro(data.is_pro || false);
           setSolvedCount(data.requests_used || 0);
+          if (typeof data.days_until_update === "number") setDaysUntilUpdate(data.days_until_update);
         })
         .catch(() => setAvailableRequests(10));
     };
@@ -389,7 +586,11 @@ function AppShell() {
   if (view === "generating") {
     return (
       <div className="app-shell">
-        <GeneratingScreen status={status} />
+        <GeneratingScreen
+          status={status}
+          availableRequests={availableRequests}
+          isPro={isPro}
+        />
       </div>
     );
   }
@@ -416,7 +617,7 @@ function AppShell() {
             <span className="hero-tag">Тесты</span>
             <span className="hero-tag">Контрольные</span>
           </div>
-          <div className="user-chip">
+          <div className={`user-chip ${isPro ? "user-chip--pro" : ""}`}>
             {isPro ? "PRO — безлимит" : `Осталось запросов: ${availableRequests}`}
           </div>
         </section>
@@ -426,8 +627,8 @@ function AppShell() {
             <button
               key={id}
               type="button"
-              className={`tab-item ${activeTab === id ? "tab-item--active" : ""}`}
-              onClick={() => setActiveTab(id)}
+              className={`tab-item ${effectiveTab === id ? "tab-item--active" : ""}`}
+              onClick={() => setEffectiveTab(id)}
             >
               <span className="tab-icon">{icon}</span>
               <span className="tab-label">{label}</span>
@@ -436,7 +637,7 @@ function AppShell() {
         </nav>
 
         <div className="tab-panels">
-          {activeTab === "solve" && (
+          {effectiveTab === "solve" && (
             <SolveSection
               mode={mode}
               text={text}
@@ -451,16 +652,21 @@ function AppShell() {
             />
           )}
 
-          {activeTab === "profile" && (
+          {effectiveTab === "profile" && (
             <ProfileSection
               solvedCount={solvedCount}
               availableRequests={availableRequests}
               isPro={isPro}
               displayName={displayName}
+              daysUntilUpdate={daysUntilUpdate}
             />
           )}
 
-          {activeTab === "settings" && (
+          {effectiveTab === "pay" && (
+            <PaySection isPro={isPro} onRefresh={() => {}} />
+          )}
+
+          {effectiveTab === "settings" && (
             <SettingsSection
               defaultDetailMode={defaultDetailMode}
               onChangeDefaultDetail={handleChangeDefaultDetail}

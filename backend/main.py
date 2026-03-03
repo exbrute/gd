@@ -31,6 +31,12 @@ ADMIN_SECRET = os.getenv("ADMIN_SECRET", "").strip()
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "").strip()
 INIT_DATA_EXPIRY = 86400  # initData valid for 24h
 
+# Crypto Pay (CryptoBot) — https://help.send.tg/en/articles/10279948-crypto-pay-api
+CRYPTO_PAY_API_TOKEN = os.getenv("CRYPTO_PAY_API_TOKEN", "").strip()
+CRYPTO_PAY_BASE = "https://testnet-pay.crypt.bot" if os.getenv("CRYPTO_PAY_TESTNET", "").lower() in ("1", "true", "yes") else "https://pay.crypt.bot"
+PRO_PRICE_AMOUNT = os.getenv("PRO_PRICE_AMOUNT", "299").strip()
+PRO_PRICE_CURRENCY = os.getenv("PRO_PRICE_CURRENCY", "RUB").strip()  # RUB, USD, EUR, etc.
+
 
 def validate_init_data(init_data: str) -> dict | None:
     """Validate Telegram WebApp initData. Returns parsed user dict or None."""
@@ -172,15 +178,27 @@ class SolutionCreateResponse(BaseModel):
     url: str
 
 
-@app.get("/", response_class=FileResponse)
-async def index() -> FileResponse:
-    """
-    Telegram WebApp entry point – serves the dark-themed frontend.
-    """
+class PayCreateRequest(BaseModel):
+    method: Literal["sbp", "cryptobot"]
+
+
+def _serve_index() -> FileResponse:
     index_path = os.path.join(static_dir, "index.html")
     if not os.path.exists(index_path):
         raise HTTPException(status_code=500, detail="Frontend is not built or missing.")
     return FileResponse(index_path)
+
+
+@app.get("/", response_class=FileResponse)
+async def index() -> FileResponse:
+    """Telegram WebApp entry point."""
+    return _serve_index()
+
+
+@app.get("/pay", response_class=FileResponse)
+async def pay_page() -> FileResponse:
+    """Страница оплаты Pro — тот же SPA."""
+    return _serve_index()
 
 
 def _find_brace_end(s: str, start: int) -> int:
@@ -259,7 +277,8 @@ async def api_me(x_telegram_init_data: str | None = Header(None)):
 
     if not uid:
         return {"telegram_id": None, "first_name": "", "username": "", "is_pro": False,
-                "remaining": 10, "requests_used": 0, "allowed": True, "reason": "anonymous"}
+                "remaining": 10, "requests_used": 0, "allowed": True, "reason": "anonymous",
+                "days_until_update": 7}
 
     username = tg_user.get("username", "")
     first_name = tg_user.get("first_name", "")
@@ -275,6 +294,7 @@ async def api_me(x_telegram_init_data: str | None = Header(None)):
         "remaining": limits["remaining"],
         "allowed": limits["allowed"],
         "reason": limits["reason"],
+        "days_until_update": limits.get("days_until_update"),
     }
 
 
@@ -502,6 +522,15 @@ def _build_solution_html(content: str, solution_id: str = "") -> str:
     .footer{{ display:flex; justify-content:space-between; align-items:center; font-size:11px; color:#475569; padding-top:16px; border-top:1px solid rgba(148,163,184,.06); animation:fadeUp .6s ease-out .55s both; }}
     .footer span{{ display:flex; align-items:center; gap:4px; }}
 
+    .pro-card{{ position:relative; border-radius:16px; padding:20px 18px; margin-bottom:24px; background:linear-gradient(135deg,rgba(249,115,22,.12),rgba(249,115,22,.04)); border:1px solid rgba(249,115,22,.25); animation:fadeUp .6s ease-out .15s both; }}
+    .pro-card h3{{ font-size:16px; font-weight:700; color:#f97316; margin:0 0 14px; }}
+    .pro-card-list{{ list-style:none; margin:0 0 16px; padding:0; }}
+    .pro-card-list li{{ display:flex; align-items:center; gap:8px; font-size:13px; color:#e2e8f0; margin-bottom:8px; }}
+    .pro-card-list li:last-child{{ margin-bottom:0; }}
+    .pro-card-btn{{ display:inline-flex; align-items:center; gap:6px; padding:10px 18px; border-radius:12px; border:none; background:linear-gradient(135deg,#f97316,#fb923c); color:#0f172a; font:600 14px Inter,sans-serif; cursor:pointer; text-decoration:none; transition:transform .2s, box-shadow .2s; box-shadow:0 8px 24px rgba(249,115,22,.35); }}
+    .pro-card-btn:hover{{ transform:translateY(-1px); box-shadow:0 12px 32px rgba(249,115,22,.45); }}
+    .pro-card-time{{ position:absolute; bottom:14px; right:18px; font-size:11px; color:#64748b; }}
+
     @keyframes fadeDown{{ from{{ opacity:0; transform:translateY(-12px); }} to{{ opacity:1; transform:translateY(0); }} }}
     @keyframes fadeUp{{ from{{ opacity:0; transform:translateY(16px); }} to{{ opacity:1; transform:translateY(0); }} }}
   </style>
@@ -526,6 +555,18 @@ def _build_solution_html(content: str, solution_id: str = "") -> str:
     <div class="hero">
       <h1>Решение готово</h1>
       <p>Формулы отрендерены автоматически</p>
+    </div>
+
+    <div class="pro-card">
+      <h3>Хочешь безлимит? Оформи Pro.</h3>
+      <ul class="pro-card-list">
+        <li>✨ Безлимит задач</li>
+        <li>✨ Приоритетная скорость</li>
+        <li>✨ Решение «как в тетради»</li>
+        <li>✨ Разные способы решения</li>
+      </ul>
+      <a href="/#pay" class="pro-card-btn">🔥 Перейти на PRO</a>
+      <span class="pro-card-time">{datetime.now().strftime("%H:%M")}</span>
     </div>
 
     <div class="solution-card">
@@ -608,6 +649,100 @@ async def get_solution_page(solution_id: str) -> HTMLResponse:
     if not content:
         raise HTTPException(status_code=404, detail="Страница просмотрена или не существует")
     return HTMLResponse(content=_build_solution_html(content, solution_id))
+
+
+async def _crypto_pay_create_invoice(telegram_id: int) -> dict:
+    """Crypto Pay API createInvoice. Returns invoice dict or raises."""
+    if not CRYPTO_PAY_API_TOKEN:
+        raise HTTPException(status_code=503, detail="Crypto Pay не настроен. Добавьте CRYPTO_PAY_API_TOKEN.")
+    payload_data = json.dumps({"telegram_id": telegram_id, "product": "pro"})
+    body = {
+        "currency_type": "fiat",
+        "fiat": PRO_PRICE_CURRENCY,
+        "amount": PRO_PRICE_AMOUNT,
+        "description": "Pro подписка — безлимит задач",
+        "payload": payload_data,
+        "expires_in": 3600,  # 1 час
+    }
+    async with httpx.AsyncClient(timeout=15) as client:
+        r = await client.post(
+            f"{CRYPTO_PAY_BASE}/api/createInvoice",
+            headers={"Crypto-Pay-API-Token": CRYPTO_PAY_API_TOKEN},
+            json=body,
+        )
+    data = r.json()
+    if not data.get("ok"):
+        err = data.get("error", {})
+        code = err.get("code", "UNKNOWN")
+        msg = err.get("name", str(err))
+        raise HTTPException(status_code=502, detail=f"Crypto Pay: {code} — {msg}")
+    inv = data.get("result", {})
+    url = inv.get("mini_app_invoice_url") or inv.get("web_app_invoice_url") or inv.get("bot_invoice_url")
+    if not url:
+        raise HTTPException(status_code=502, detail="Crypto Pay не вернул URL оплаты")
+    return {"url": url, "invoice_id": inv.get("invoice_id")}
+
+
+@app.post("/api/pay/create")
+async def pay_create(
+    req: PayCreateRequest,
+    x_telegram_init_data: str | None = Header(None),
+):
+    """
+    Создаёт платёж на подписку Pro.
+    Методы: cryptobot (Crypto Pay API), sbp — в разработке.
+    """
+    tg_user = require_telegram(x_telegram_init_data)
+    telegram_id = tg_user.get("id")
+    if not telegram_id:
+        raise HTTPException(status_code=401, detail="Требуется авторизация Telegram")
+
+    if req.method not in ("sbp", "cryptobot"):
+        raise HTTPException(status_code=400, detail="Неизвестный способ оплаты")
+
+    if req.method == "cryptobot":
+        result = await _crypto_pay_create_invoice(telegram_id)
+        return {"ok": True, "url": result["url"]}
+
+    # СБП — в разработке
+    raise HTTPException(status_code=501, detail="СБП в разработке. Используйте CryptoBot.")
+
+
+def _verify_crypto_pay_signature(body: bytes, signature: str) -> bool:
+    """Проверка подписи webhook Crypto Pay API (HMAC-SHA-256)."""
+    if not CRYPTO_PAY_API_TOKEN or not signature:
+        return False
+    secret = hashlib.sha256(CRYPTO_PAY_API_TOKEN.encode()).digest()
+    expected = hmac.new(secret, body, hashlib.sha256).hexdigest()
+    return hmac.compare_digest(expected, signature)
+
+
+@app.post("/api/pay/cryptobot/webhook")
+async def crypto_pay_webhook(request: Request):
+    """
+    Webhook Crypto Pay API — вызывается при оплате счёта.
+    Включите в @CryptoBot: Crypto Pay → My Apps → Webhooks.
+    URL: https://ваш-домен/api/pay/cryptobot/webhook
+    """
+    if not CRYPTO_PAY_API_TOKEN:
+        raise HTTPException(status_code=503, detail="Crypto Pay не настроен")
+    body = await request.body()
+    sig = request.headers.get("crypto-pay-api-signature", "")
+    if not _verify_crypto_pay_signature(body, sig):
+        raise HTTPException(status_code=403, detail="Invalid signature")
+    data = json.loads(body)
+    update_type = data.get("update_type")
+    if update_type == "invoice_paid":
+        invoice = data.get("payload", {})  # Invoice object
+        custom_payload = invoice.get("payload", "")  # our JSON string
+        try:
+            pl = json.loads(custom_payload) if isinstance(custom_payload, str) else (custom_payload or {})
+        except json.JSONDecodeError:
+            pl = {}
+        telegram_id = pl.get("telegram_id")
+        if telegram_id and pl.get("product") == "pro":
+            await set_user_pro(int(telegram_id), True)
+    return {"ok": True}
 
 
 # ═══════════════════ ADMIN ═══════════════════

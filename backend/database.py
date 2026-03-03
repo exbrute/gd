@@ -1,3 +1,4 @@
+import math
 import os
 import time
 
@@ -98,9 +99,9 @@ async def get_or_create_user(telegram_id: int, username: str = "", first_name: s
 async def check_can_solve(telegram_id: int) -> dict:
     user = await get_or_create_user(telegram_id)
     if user["is_banned"]:
-        return {"allowed": False, "remaining": 0, "reason": "banned"}
+        return {"allowed": False, "remaining": 0, "reason": "banned", "days_until_update": 0}
     if user["is_pro"]:
-        return {"allowed": True, "remaining": "unlimited", "reason": "pro"}
+        return {"allowed": True, "remaining": "unlimited", "reason": "pro", "days_until_update": None}
 
     now = time.time()
     period_start = user["period_start"] or now
@@ -115,11 +116,14 @@ async def check_can_solve(telegram_id: int) -> dict:
             finally:
                 await db.close()
         user["requests_used"] = 0
+        period_start = now
 
+    period_end = period_start + FREE_COOLDOWN_DAYS * 86400
+    days_until_update = max(0, math.ceil((period_end - now) / 86400))
     remaining = max(0, FREE_LIMIT - user["requests_used"])
     if remaining <= 0:
-        return {"allowed": False, "remaining": 0, "reason": "limit"}
-    return {"allowed": True, "remaining": remaining, "reason": "free"}
+        return {"allowed": False, "remaining": 0, "reason": "limit", "days_until_update": days_until_update}
+    return {"allowed": True, "remaining": remaining, "reason": "free", "days_until_update": days_until_update}
 
 
 async def increment_usage(telegram_id: int):

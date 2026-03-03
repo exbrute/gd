@@ -70,4 +70,22 @@ ONLYSQ_V2_URL=https://api.onlysq.ru/ai/v2
 OPENAI_MODEL=gemini-2.0-flash
 ```
 
+### Crypto Pay (CryptoBot) — оплата Pro
+
+Для приёма оплаты через @CryptoBot: [Crypto Pay API](https://help.send.tg/en/articles/10279948-crypto-pay-api).
+
+1. Создайте приложение в @CryptoBot: **Crypto Pay → Create App** и скопируйте API Token.
+2. Добавьте в `.env`:
+
+```env
+CRYPTO_PAY_API_TOKEN=123456789:AAzQcZWQqQ...
+PRO_PRICE_AMOUNT=299
+PRO_PRICE_CURRENCY=RUB
+```
+
+3. Включите Webhooks в @CryptoBot: **Crypto Pay → My Apps → ваш app → Webhooks** → укажите URL:
+   `https://ваш-домен/api/pay/cryptobot/webhook`
+
+4. Для теста: `CRYPTO_PAY_TESTNET=true` (использует @CryptoTestnetBot).
+
 
