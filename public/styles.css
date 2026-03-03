@@ -195,6 +195,16 @@ body {
   box-shadow: 0 0 0 2px rgba(56, 189, 248, 0.4);
 }
 
+.user-chip--pro {
+  box-shadow: 0 0 16px rgba(249, 115, 22, 0.18), 0 0 32px rgba(249, 115, 22, 0.08);
+  border-color: rgba(249, 115, 22, 0.35);
+}
+
+.user-chip--pro::before {
+  background: linear-gradient(135deg, #f97316, #fb923c);
+  box-shadow: 0 0 0 2px rgba(249, 115, 22, 0.45), 0 0 10px rgba(249, 115, 22, 0.3);
+}
+
 .solver-card {
   padding: 16px 18px 18px;
 }
@@ -676,8 +686,10 @@ body {
 .generating-page {
   min-height: 80vh;
   display: flex;
+  flex-direction: column;
   align-items: center;
   justify-content: center;
+  gap: 16px;
   padding: 24px;
 }
 
@@ -697,20 +709,27 @@ body {
   gap: 10px;
 }
 
+.generating-steps--single {
+  min-height: 42px;
+  align-items: center;
+}
+
 .generating-step {
   display: flex;
   align-items: center;
   gap: 10px;
   padding: 8px 0;
-  opacity: 0.4;
-  transform: translateX(0);
-  transition: opacity 0.35s ease, transform 0.35s ease, color 0.35s ease;
+  opacity: 0;
+  transform: translateY(4px);
+  animation: generating-step-fade 0.5s ease-out forwards;
+  color: #e5e7eb;
 }
 
-.generating-step--active {
-  opacity: 1;
-  color: #e5e7eb;
-  transform: translateX(4px);
+@keyframes generating-step-fade {
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
 }
 
 .generating-step-emoji {
@@ -728,6 +747,56 @@ body {
   font-size: 12px;
   color: #6b7280;
   text-align: right;
+}
+
+.generating-warning {
+  position: relative;
+  width: 100%;
+  max-width: 340px;
+  padding: 16px 18px;
+  border-radius: 16px;
+  border: 1px solid rgba(251, 191, 36, 0.3);
+  background: linear-gradient(135deg, rgba(251, 191, 36, 0.08), rgba(251, 191, 36, 0.02));
+}
+
+.generating-warning-top {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 14px;
+  font-weight: 600;
+  color: #fbbf24;
+  margin-bottom: 8px;
+}
+
+.generating-warning-icon {
+  font-size: 18px;
+}
+
+.generating-warning-text {
+  margin: 0 0 6px;
+  font-size: 13px;
+  color: #d1d5db;
+  line-height: 1.5;
+}
+
+.generating-warning-cta {
+  font-size: 13px;
+  font-weight: 600;
+  color: #f97316;
+  text-decoration: none;
+}
+
+.generating-warning-cta:hover {
+  text-decoration: underline;
+}
+
+.generating-warning-time {
+  position: absolute;
+  bottom: 14px;
+  right: 18px;
+  font-size: 11px;
+  color: #6b7280;
 }
 
 .profile-card {
@@ -835,6 +904,11 @@ body {
   color: #9ca3af;
 }
 
+.profile-tag--pro {
+  color: #f97316;
+  text-shadow: 0 0 10px rgba(249, 115, 22, 0.3);
+}
+
 .profile-stats {
   display: flex;
   align-items: stretch;
@@ -848,6 +922,15 @@ body {
   padding: 8px 9px;
   background: rgba(15, 23, 42, 0.92);
   border: 1px solid rgba(51, 65, 85, 0.9);
+}
+
+.profile-stat--pro {
+  box-shadow: 0 0 14px rgba(249, 115, 22, 0.15), inset 0 0 16px rgba(249, 115, 22, 0.03);
+  border-color: rgba(249, 115, 22, 0.3);
+}
+
+.profile-stat--pro .profile-stat-value {
+  color: #f97316;
 }
 
 .profile-stat-value {
@@ -931,6 +1014,94 @@ body {
   font-size: 11px;
   color: #9ca3af;
   line-height: 1.5;
+}
+
+/* ---------- Страница оплаты Pro ---------- */
+.pay-card {
+  padding: 14px 16px 18px;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
+.pay-subtitle {
+  margin: 0 0 16px;
+  font-size: 13px;
+  color: #9ca3af;
+  line-height: 1.5;
+}
+
+.pay-methods {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  margin-bottom: 8px;
+}
+
+.pay-method-btn {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 14px 16px;
+  border-radius: 14px;
+  border: 1px solid rgba(51, 65, 85, 0.9);
+  background: rgba(15, 23, 42, 0.9);
+  color: #e5e7eb;
+  text-align: left;
+  cursor: pointer;
+  transition: border-color 0.2s, background 0.2s, box-shadow 0.2s;
+}
+
+.pay-method-btn:hover {
+  border-color: rgba(148, 163, 184, 0.4);
+  background: rgba(15, 23, 42, 0.98);
+}
+
+.pay-method-btn--active {
+  border-color: #f97316;
+  background: rgba(249, 115, 22, 0.1);
+  box-shadow: 0 0 0 1px rgba(249, 115, 22, 0.3);
+}
+
+.pay-method-icon {
+  font-size: 24px;
+  flex-shrink: 0;
+}
+
+.pay-method-info {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.pay-method-label {
+  font-size: 14px;
+  font-weight: 600;
+}
+
+.pay-method-desc {
+  font-size: 11px;
+  color: #9ca3af;
+}
+
+.pay-note {
+  margin: 0;
+  font-size: 11px;
+  color: #6b7280;
+}
+
+.pay-pro-badge {
+  font-size: 16px;
+  font-weight: 700;
+  color: #f97316;
+  margin-bottom: 8px;
+  text-shadow: 0 0 12px rgba(249, 115, 22, 0.28);
+}
+
+.pay-pro-text {
+  margin: 0;
+  font-size: 13px;
+  color: #9ca3af;
 }
 
 .settings-card {

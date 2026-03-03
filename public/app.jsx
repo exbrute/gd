@@ -1,4 +1,4 @@
-const { useEffect, useState } = React;
+const { useCallback, useEffect, useState } = React;
 
 const MODES = {
   short: "Кратко",
@@ -8,37 +8,88 @@ const MODES = {
 const TABS = {
   solve: { label: "Задачи", icon: "📚" },
   profile: { label: "Профиль", icon: "👤" },
+  pay: { label: "Pro", icon: "⚡" },
   settings: { label: "Настройки", icon: "⚙️" },
 };
 
-function getTelegramUser() {
-  try {
-    return window.Telegram?.WebApp?.initDataUnsafe?.user || null;
-  } catch { return null; }
+const INIT_DATA_KEY = "tg_init_data";
+const AUTH_TOKEN_KEY = "tg_auth_token";
+
+function getAuthToken() {
+  return sessionStorage.getItem(AUTH_TOKEN_KEY) || "";
 }
 
-function getInitData() {
+function setAuthToken(token) {
+  if (token) sessionStorage.setItem(AUTH_TOKEN_KEY, token);
+}
+
+function readInitDataFromTelegram() {
   try {
-    return window.Telegram?.WebApp?.initData || "";
+    const twa = window.Telegram?.WebApp;
+    if (!twa) return "";
+    twa.ready && twa.ready();
+    return twa.initData || "";
   } catch { return ""; }
 }
 
+function readInitDataFromUrl() {
+  try {
+    const hash = (window.location.hash || "").replace(/^#/, "").trim();
+    const search = (window.location.search || "").replace(/^\?/, "").trim();
+    const params = new URLSearchParams(hash || search);
+    const fromParam = params.get("tgWebAppData") || params.get("initData") || params.get("tgWebAppDataRaw");
+    if (fromParam) return fromParam;
+    if (hash && hash.includes("hash=") && hash.includes("auth_date=")) return hash;
+    return "";
+  } catch { return ""; }
+}
+
+function getInitData() {
+  let data = readInitDataFromTelegram();
+  if (!data) data = readInitDataFromUrl();
+  if (!data) data = sessionStorage.getItem(INIT_DATA_KEY) || "";
+  if (data) sessionStorage.setItem(INIT_DATA_KEY, data);
+  return data || "";
+}
+
+function getTelegramUser() {
+  try {
+    const u = window.Telegram?.WebApp?.initDataUnsafe?.user;
+    if (u?.id) return u;
+    const raw = getInitData();
+    if (!raw) return null;
+    const p = new URLSearchParams(raw);
+    const j = p.get("user");
+    return j ? JSON.parse(j) : null;
+  } catch { return null; }
+}
+
 function authHeaders(extra = {}) {
-  return {
+  const h = {
     "Content-Type": "application/json",
     "X-Telegram-Init-Data": getInitData(),
     ...extra,
   };
+  const tok = getAuthToken();
+  if (tok) h["X-Auth-Token"] = tok;
+  return h;
 }
 
 function useTelegramTheme() {
   useEffect(() => {
-    if (window.Telegram?.WebApp) {
-      const app = window.Telegram.WebApp;
-      app.ready();
-      app.expand();
-      app.setHeaderColor("#0b1120");
-      app.setBackgroundColor("#020617");
+    const twa = window.Telegram?.WebApp;
+    if (twa) {
+      twa.ready();
+      twa.expand();
+      twa.setHeaderColor("#0b1120");
+      twa.setBackgroundColor("#020617");
+      const save = () => {
+        const data = twa.initData || readInitDataFromUrl();
+        if (data) sessionStorage.setItem(INIT_DATA_KEY, data);
+      };
+      save();
+      const t = setInterval(save, 300);
+      return () => clearInterval(t);
     }
   }, []);
 }
@@ -95,8 +146,15 @@ const GENERATION_STEPS = [
   { emoji: "✏️", text: "Проверяем вычисления..." },
 ];
 
-function GeneratingScreen({ status }) {
+function pluralRequests(n) {
+  if (n === 1) return "запрос";
+  if (n >= 2 && n <= 4) return "запроса";
+  return "запросов";
+}
+
+function GeneratingScreen({ status, availableRequests, isPro }) {
   const [stepIndex, setStepIndex] = useState(0);
+  const showLowLimit = !isPro && typeof availableRequests === "number" && availableRequests <= 2;
 
   useEffect(() => {
     const t = setInterval(() => {
@@ -105,19 +163,28 @@ function GeneratingScreen({ status }) {
     return () => clearInterval(t);
   }, []);
 
+  const step = GENERATION_STEPS[stepIndex];
+
   return (
     <div className="generating-page">
+      {showLowLimit && (
+        <div className="generating-warning glass">
+          <div className="generating-warning-top">
+            <span>Осталось {availableRequests} {pluralRequests(availableRequests)}</span>
+            <span className="generating-warning-icon" aria-hidden>⚠️</span>
+          </div>
+          <p className="generating-warning-text">
+            Чтобы не остаться без решения на контрольной —
+          </p>
+          <a href="/#pay" className="generating-warning-cta">подключи PRO</a>
+        </div>
+      )}
       <div className="generating-card glass">
-        <div className="generating-steps">
-          {GENERATION_STEPS.map((step, i) => (
-            <div
-              key={i}
-              className={`generating-step ${i === stepIndex ? "generating-step--active" : ""}`}
-            >
-              <span className="generating-step-emoji">{step.emoji}</span>
-              <span className="generating-step-text">{step.text}</span>
-            </div>
-          ))}
+        <div className="generating-steps generating-steps--single">
+          <div key={stepIndex} className="generating-step">
+            <span className="generating-step-emoji">{step.emoji}</span>
+            <span className="generating-step-text">{step.text}</span>
+          </div>
         </div>
       </div>
     </div>
@@ -210,20 +277,39 @@ function ProfileSection({
   isPro,
   displayName,
   daysUntilUpdate,
+  telegramId,
+  debugInfo,
 }) {
   const used = Math.min(solvedCount, FREE_LIMIT);
   const remaining = isPro ? null : (typeof availableRequests === "number" ? availableRequests : FREE_LIMIT - used);
   const days = daysUntilUpdate ?? 0;
 
+  let hint = "Отправьте /start боту и нажмите «📚 Открыть TestAI» — счётчик привяжется автоматически.";
+  if (debugInfo) {
+    const d = debugInfo;
+    const parts = [];
+    if (!d.init_data_received) parts.push("initData на сервер не пришёл");
+    else if (!d.validation_passed) parts.push(`initData пришёл (${d.init_data_len} символов), но проверка не прошла — проверьте TELEGRAM_BOT_TOKEN в .env`);
+    else parts.push("Проверка пройдена, но пользователь не определён");
+    if (!d.bot_token_set) parts.push("TELEGRAM_BOT_TOKEN не задан");
+    hint = parts.join(". ");
+  }
+
   return (
     <section className="profile-card glass">
+      {!telegramId && (
+        <div className="status status--error" style={{ marginBottom: 16 }}>
+          <span className="status-dot" />
+          <span>{hint}</span>
+        </div>
+      )}
       <div className="profile-main">
         <div className="profile-avatar">
           <span>{(displayName || "У")[0].toUpperCase()}</span>
         </div>
         <div>
           <div className="profile-name">{displayName}</div>
-          <div className="profile-tag">{isPro ? "Pro-подписка" : "Бесплатный план"}</div>
+          <div className={`profile-tag ${isPro ? "profile-tag--pro" : ""}`}>{isPro ? "Pro-подписка" : "Бесплатный план"}</div>
         </div>
       </div>
 
@@ -260,11 +346,11 @@ function ProfileSection({
           <div className="profile-stat-value">{solvedCount}</div>
           <div className="profile-stat-label">Решено задач</div>
         </div>
-        <div className="profile-stat">
+        <div className={`profile-stat ${isPro ? "profile-stat--pro" : ""}`}>
           <div className="profile-stat-value">{isPro ? "∞" : remaining}</div>
           <div className="profile-stat-label">Осталось</div>
         </div>
-        <div className="profile-stat">
+        <div className={`profile-stat ${isPro ? "profile-stat--pro" : ""}`}>
           <div className="profile-stat-value">{isPro ? "PRO" : "FREE"}</div>
           <div className="profile-stat-label">Подписка</div>
         </div>
@@ -275,6 +361,102 @@ function ProfileSection({
           ? "У тебя безлимит — решай сколько хочешь!"
           : "10 запросов каждые 7 дней. Хочешь безлимит? Оформи Pro."}
       </div>
+    </section>
+  );
+}
+
+const PAYMENT_METHODS = [
+  { id: "sbp", label: "СБП", icon: "🏦", desc: "Оплата через Систему быстрых платежей" },
+  { id: "cryptobot", label: "CryptoBot", icon: "₿", desc: "Оплата криптовалютой в Telegram" },
+];
+
+function PaySection({ isPro, onRefresh }) {
+  const [selectedMethod, setSelectedMethod] = useState(null);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState("");
+  const [status, setStatus] = useState("");
+
+  const handlePay = async (methodId) => {
+    const initData = getInitData();
+    if (!initData) {
+      setError("Не удалось получить данные авторизации. Закройте и откройте приложение заново из чата с ботом.");
+      return;
+    }
+    setLoading(true);
+    setError("");
+    setStatus("");
+    try {
+      const resp = await fetch("/api/pay/create", {
+        method: "POST",
+        headers: authHeaders(),
+        body: JSON.stringify({
+          method: methodId,
+          init_data: initData || undefined,
+          auth_token: getAuthToken() || undefined,
+        }),
+      });
+      const data = await resp.json().catch(() => ({}));
+      if (!resp.ok) throw new Error(data.detail || "Ошибка создания платежа");
+      if (data.url) {
+        window.location.href = data.url;
+      } else if (data.qr_url) {
+        window.open(data.qr_url, "_blank");
+      } else {
+        setStatus("Платёж создан. API интеграция — подключите провайдера.");
+      }
+    } catch (err) {
+      setError(err.message || "Не удалось создать платёж");
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  if (isPro) {
+    return (
+      <section className="pay-card glass">
+        <div className="pay-pro-badge">У тебя уже Pro</div>
+        <p className="pay-pro-text">Безлимит задач уже подключён. Продолжай решать!</p>
+      </section>
+    );
+  }
+
+  return (
+    <section className="pay-card glass">
+      <h2 className="section-title">Оформление Pro</h2>
+      <p className="pay-subtitle">Безлимит задач, приоритетная скорость, решение «как в тетради»</p>
+
+      <div className="pay-methods">
+        {PAYMENT_METHODS.map((m) => (
+          <button
+            key={m.id}
+            type="button"
+            className={`pay-method-btn ${selectedMethod === m.id ? "pay-method-btn--active" : ""}`}
+            onClick={() => setSelectedMethod(m.id)}
+          >
+            <span className="pay-method-icon">{m.icon}</span>
+            <div className="pay-method-info">
+              <span className="pay-method-label">{m.label}</span>
+              <span className="pay-method-desc">{m.desc}</span>
+            </div>
+          </button>
+        ))}
+      </div>
+
+      {error && <div className="status status--error">{error}</div>}
+      {status && <div className="status status--success">{status}</div>}
+
+      <button
+        className="primary-btn"
+        type="button"
+        disabled={!selectedMethod || loading}
+        onClick={() => selectedMethod && handlePay(selectedMethod)}
+      >
+        {loading ? "Создаём платёж..." : selectedMethod
+          ? `Оплатить через ${selectedMethod === "sbp" ? "СБП" : "CryptoBot"}`
+          : "Выберите способ оплаты"}
+      </button>
+
+      <p className="pay-note">CryptoBot подключён. СБП — в разработке.</p>
     </section>
   );
 }
@@ -334,42 +516,125 @@ function AppShell() {
   const [status, setStatus] = useState("");
   const [statusTone, setStatusTone] = useState("neutral");
   const [view, setView] = useState("form"); // "form" | "generating"
+  const [initialTab, setInitialTab] = useState(null);
   const [solvedCount, setSolvedCount] = useState(0);
   const [availableRequests, setAvailableRequests] = useState("...");
   const [daysUntilUpdate, setDaysUntilUpdate] = useState(7);
   const [isPro, setIsPro] = useState(false);
   const [telegramId, setTelegramId] = useState(null);
   const [displayName, setDisplayName] = useState("Ученик");
+  const [debugInfo, setDebugInfo] = useState(null);
 
   useEffect(() => {
     setMode(defaultDetailMode);
   }, [defaultDetailMode]);
 
   useEffect(() => {
+    const hash = (window.location.hash || "").replace("#", "");
+    const path = (window.location.pathname || "").replace(/\/$/, "") || "/";
+    if (hash === "pay" || path === "/pay") setInitialTab("pay");
+  }, []);
+
+  const effectiveTab = initialTab !== null ? initialTab : activeTab;
+  const setEffectiveTab = (t) => {
+    setInitialTab(null);
+    setActiveTab(t);
+  };
+
+  useEffect(() => {
+    const params = new URLSearchParams(window.location.search || "");
+    const tgAuth = params.get("tg_auth");
+    if (!tgAuth) return;
+    fetch("/api/auth/telegram", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ token: tgAuth }),
+    })
+      .then(r => r.json())
+      .then(data => {
+        if (data.auth_token) {
+          setAuthToken(data.auth_token);
+          setTelegramId(data.telegram_id);
+          setSolvedCount(data.requests_used || 0);
+          setAvailableRequests(data.remaining ?? 10);
+          setIsPro(data.is_pro || false);
+          setDisplayName(data.first_name || data.username || "Ученик");
+          setDebugInfo(null);
+          if (typeof data.days_until_update === "number") setDaysUntilUpdate(data.days_until_update);
+        }
+      })
+      .finally(() => {
+        const u = new URL(window.location.href);
+        u.searchParams.delete("tg_auth");
+        window.history.replaceState({}, "", u.pathname + (u.search || "") + (u.hash || ""));
+      });
+  }, []);
+
+  useEffect(() => {
+    if (new URLSearchParams(window.location.search || "").get("tg_auth")) return;
     const init = () => {
       const initData = getInitData();
-      fetch("/api/me", {
-        headers: { "X-Telegram-Init-Data": initData }
-      })
+      const authTok = getAuthToken();
+      const base = initData ? `/api/me?init_data=${encodeURIComponent(initData)}&debug=1` : "/api/me?debug=1";
+      const headers = { "X-Telegram-Init-Data": initData };
+      if (authTok) headers["X-Auth-Token"] = authTok;
+      return fetch(base, { headers })
         .then(r => r.json())
         .then(data => {
-          if (data.telegram_id) setTelegramId(data.telegram_id);
+          if (data.telegram_id) {
+            setTelegramId(data.telegram_id);
+            setSolvedCount(data.requests_used || 0);
+            setDebugInfo(null);
+            if (typeof data.days_until_update === "number") setDaysUntilUpdate(data.days_until_update);
+          } else {
+            setSolvedCount(0);
+            setDebugInfo(data.debug || null);
+          }
+          setAvailableRequests(data.remaining ?? 10);
+          setIsPro(data.is_pro || false);
           if (data.first_name) setDisplayName(data.first_name);
           else if (data.username) setDisplayName(data.username);
-          setAvailableRequests(data.remaining);
-          setIsPro(data.is_pro || false);
-          setSolvedCount(data.requests_used || 0);
-          if (typeof data.days_until_update === "number") setDaysUntilUpdate(data.days_until_update);
+          return data.telegram_id;
         })
-        .catch(() => setAvailableRequests(10));
+        .catch(() => { setAvailableRequests(10); return null; });
     };
 
-    if (window.Telegram?.WebApp?.initData) {
-      init();
-    } else {
-      setTimeout(init, 500);
-    }
+    init().then((uid) => {
+      if (!uid && window.Telegram?.WebApp) {
+        [800, 2000, 4000].forEach((ms) => setTimeout(init, ms));
+      }
+    });
   }, []);
+
+  const refreshMe = useCallback(() => {
+    const initData = getInitData();
+    const authTok = getAuthToken();
+    const base = initData ? `/api/me?init_data=${encodeURIComponent(initData)}&debug=1` : "/api/me?debug=1";
+    const headers = { "X-Telegram-Init-Data": initData };
+    if (authTok) headers["X-Auth-Token"] = authTok;
+    fetch(base, { headers })
+      .then(r => r.json())
+      .then(data => {
+        if (data.telegram_id) {
+          setTelegramId(data.telegram_id);
+          setSolvedCount(data.requests_used || 0);
+          setDebugInfo(null);
+          if (typeof data.days_until_update === "number") setDaysUntilUpdate(data.days_until_update);
+        } else {
+          setSolvedCount(0);
+          setDebugInfo(data.debug || null);
+        }
+        setAvailableRequests(data.remaining ?? 10);
+        setIsPro(data.is_pro || false);
+        if (data.first_name) setDisplayName(data.first_name);
+        else if (data.username) setDisplayName(data.username);
+      })
+      .catch(() => {});
+  }, []);
+
+  useEffect(() => {
+    if (effectiveTab === "profile") refreshMe();
+  }, [effectiveTab, refreshMe]);
 
   const handleFileChange = (file) => {
     if (!file) return;
@@ -416,6 +681,8 @@ function AppShell() {
           detail: mode === "short" ? "short" : "detailed",
           image_base64: imageBase64,
           telegram_id: telegramId,
+          init_data: getInitData() || undefined,
+          auth_token: getAuthToken() || undefined,
         }),
       });
 
@@ -457,7 +724,11 @@ function AppShell() {
   if (view === "generating") {
     return (
       <div className="app-shell">
-        <GeneratingScreen status={status} />
+        <GeneratingScreen
+          status={status}
+          availableRequests={availableRequests}
+          isPro={isPro}
+        />
       </div>
     );
   }
@@ -484,9 +755,6 @@ function AppShell() {
             <span className="hero-tag">Тесты</span>
             <span className="hero-tag">Контрольные</span>
           </div>
-          <div className="user-chip">
-            {isPro ? "PRO — безлимит" : `Осталось запросов: ${availableRequests}`}
-          </div>
         </section>
 
         <nav className="tab-bar glass">
@@ -494,8 +762,8 @@ function AppShell() {
             <button
               key={id}
               type="button"
-              className={`tab-item ${activeTab === id ? "tab-item--active" : ""}`}
-              onClick={() => setActiveTab(id)}
+              className={`tab-item ${effectiveTab === id ? "tab-item--active" : ""}`}
+              onClick={() => setEffectiveTab(id)}
             >
               <span className="tab-icon">{icon}</span>
               <span className="tab-label">{label}</span>
@@ -504,7 +772,7 @@ function AppShell() {
         </nav>
 
         <div className="tab-panels">
-          {activeTab === "solve" && (
+          {effectiveTab === "solve" && (
             <SolveSection
               mode={mode}
               text={text}
@@ -519,17 +787,23 @@ function AppShell() {
             />
           )}
 
-          {activeTab === "profile" && (
+          {effectiveTab === "profile" && (
             <ProfileSection
               solvedCount={solvedCount}
               availableRequests={availableRequests}
               isPro={isPro}
               displayName={displayName}
               daysUntilUpdate={daysUntilUpdate}
+              telegramId={telegramId}
+              debugInfo={debugInfo}
             />
           )}
 
-          {activeTab === "settings" && (
+          {effectiveTab === "pay" && (
+            <PaySection isPro={isPro} onRefresh={refreshMe} />
+          )}
+
+          {effectiveTab === "settings" && (
             <SettingsSection
               defaultDetailMode={defaultDetailMode}
               onChangeDefaultDetail={handleChangeDefaultDetail}
