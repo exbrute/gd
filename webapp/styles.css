@@ -258,6 +258,14 @@ body {
 
 .tab-icon {
   font-size: 14px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.tab-svg {
+  width: 20px;
+  height: 20px;
 }
 
 .tab-label {

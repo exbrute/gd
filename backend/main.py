@@ -890,20 +890,9 @@ async def admin_reset_requests(telegram_id: int = Query(...), secret: str = Quer
 
 
 @app.get("/admin", response_class=HTMLResponse)
-async def admin_panel(secret: str = Query(""), debug: bool = Query(False)):
-    if not ADMIN_SECRET:
-        return HTMLResponse(
-            "<h1>403 Forbidden</h1><p>ADMIN_SECRET не задан на сервере (проверьте env vars в Vercel).</p>",
-            status_code=403,
-        )
-    if secret.strip() != ADMIN_SECRET.strip():
-        hint = ""
-        if debug:
-            hint = f"<p>secret из URL: {repr(secret[:20])}... | ADMIN_SECRET длина: {len(ADMIN_SECRET)}</p>"
-        return HTMLResponse(
-            f"<h1>403 Forbidden</h1><p>Неверный secret.</p>{hint}",
-            status_code=403,
-        )
+async def admin_panel(secret: str = Query("")):
+    if not ADMIN_SECRET or secret.strip() != ADMIN_SECRET.strip():
+        return HTMLResponse("<h1>403 Forbidden</h1>", status_code=403)
     return HTMLResponse(_build_admin_html(secret))
 
 
