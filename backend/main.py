@@ -269,10 +269,11 @@ def prepare_math_for_render(text: str) -> str:
 
 
 @app.get("/api/me")
-async def api_me(request: Request):
+async def api_me(request: Request, debug: bool = Query(False)):
     """Extract user from initData server-side, register and return profile."""
     init_data = _get_init_data(request)
     tg_user = require_telegram(init_data or None)
+    validation_ok = bool(tg_user and tg_user.get("id"))
     uid = tg_user.get("id")
 
     if not uid and init_data:
@@ -281,16 +282,24 @@ async def api_me(request: Request):
             user_json = params.get("user", [""])[0]
             if user_json:
                 import json as _json
-                parsed = _json.loads(user_json)
+                parsed = _json.loads(unquote(user_json))
                 uid = parsed.get("id")
                 tg_user = parsed
         except Exception:
             pass
 
     if not uid:
-        return {"telegram_id": None, "first_name": "", "username": "", "is_pro": False,
+        resp = {"telegram_id": None, "first_name": "", "username": "", "is_pro": False,
                 "remaining": 10, "requests_used": 0, "allowed": True, "reason": "anonymous",
                 "days_until_update": 7}
+        if debug:
+            resp["debug"] = {
+                "init_data_received": bool(init_data and len(init_data) > 0),
+                "init_data_len": len(init_data) if init_data else 0,
+                "validation_passed": validation_ok,
+                "bot_token_set": bool(TELEGRAM_BOT_TOKEN),
+            }
+        return resp
 
     username = tg_user.get("username", "")
     first_name = tg_user.get("first_name", "")

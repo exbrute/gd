@@ -266,17 +266,29 @@ function ProfileSection({
   displayName,
   daysUntilUpdate,
   telegramId,
+  debugInfo,
 }) {
   const used = Math.min(solvedCount, FREE_LIMIT);
   const remaining = isPro ? null : (typeof availableRequests === "number" ? availableRequests : FREE_LIMIT - used);
   const days = daysUntilUpdate ?? 0;
+
+  let hint = "Нажмите кнопку «📚 Открыть TestAI» под сообщением бота.";
+  if (debugInfo) {
+    const d = debugInfo;
+    const parts = [];
+    if (!d.init_data_received) parts.push("initData на сервер не пришёл");
+    else if (!d.validation_passed) parts.push(`initData пришёл (${d.init_data_len} символов), но проверка не прошла — проверьте TELEGRAM_BOT_TOKEN в .env`);
+    else parts.push("Проверка пройдена, но пользователь не определён");
+    if (!d.bot_token_set) parts.push("TELEGRAM_BOT_TOKEN не задан");
+    hint = parts.join(". ");
+  }
 
   return (
     <section className="profile-card glass">
       {!telegramId && (
         <div className="status status--error" style={{ marginBottom: 16 }}>
           <span className="status-dot" />
-          <span>Нажмите кнопку «📚 Открыть TestAI» под сообщением бота (отправьте /start, затем кнопку).</span>
+          <span>{hint}</span>
         </div>
       )}
       <div className="profile-main">
@@ -498,6 +510,7 @@ function AppShell() {
   const [isPro, setIsPro] = useState(false);
   const [telegramId, setTelegramId] = useState(null);
   const [displayName, setDisplayName] = useState("Ученик");
+  const [debugInfo, setDebugInfo] = useState(null);
 
   useEffect(() => {
     setMode(defaultDetailMode);
@@ -518,8 +531,8 @@ function AppShell() {
   useEffect(() => {
     const init = () => {
       const initData = getInitData();
-      const url = initData ? `/api/me?init_data=${encodeURIComponent(initData)}` : "/api/me";
-      return fetch(url, {
+      const base = initData ? `/api/me?init_data=${encodeURIComponent(initData)}&debug=1` : "/api/me?debug=1";
+      return fetch(base, {
         headers: { "X-Telegram-Init-Data": initData }
       })
         .then(r => r.json())
@@ -527,9 +540,11 @@ function AppShell() {
           if (data.telegram_id) {
             setTelegramId(data.telegram_id);
             setSolvedCount(data.requests_used || 0);
+            setDebugInfo(null);
             if (typeof data.days_until_update === "number") setDaysUntilUpdate(data.days_until_update);
           } else {
             setSolvedCount(0);
+            setDebugInfo(data.debug || null);
           }
           setAvailableRequests(data.remaining ?? 10);
           setIsPro(data.is_pro || false);
@@ -549,16 +564,18 @@ function AppShell() {
 
   const refreshMe = useCallback(() => {
     const initData = getInitData();
-    const url = initData ? `/api/me?init_data=${encodeURIComponent(initData)}` : "/api/me";
-    fetch(url, { headers: { "X-Telegram-Init-Data": initData } })
+    const base = initData ? `/api/me?init_data=${encodeURIComponent(initData)}&debug=1` : "/api/me?debug=1";
+    fetch(base, { headers: { "X-Telegram-Init-Data": initData } })
       .then(r => r.json())
       .then(data => {
         if (data.telegram_id) {
           setTelegramId(data.telegram_id);
           setSolvedCount(data.requests_used || 0);
+          setDebugInfo(null);
           if (typeof data.days_until_update === "number") setDaysUntilUpdate(data.days_until_update);
         } else {
           setSolvedCount(0);
+          setDebugInfo(data.debug || null);
         }
         setAvailableRequests(data.remaining ?? 10);
         setIsPro(data.is_pro || false);
@@ -730,6 +747,7 @@ function AppShell() {
               displayName={displayName}
               daysUntilUpdate={daysUntilUpdate}
               telegramId={telegramId}
+              debugInfo={debugInfo}
             />
           )}
 
