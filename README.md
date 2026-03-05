@@ -86,6 +86,8 @@ PRO_PRICE_CURRENCY=RUB
 # Количество бесплатных активаций за период (1–50000): FREE_LIMIT=10
 ```
 
+**Промокоды:** создаются в админ-панели. Откройте `/admin?secret=ВАШ_ADMIN_SECRET` → раздел «Промокоды»: укажите код, скидку %, лимит использований и срок. Пользователи вводят промокод на странице Pro при оплате.
+
 3. Включите Webhooks в @CryptoBot: **Crypto Pay → My Apps → ваш app → Webhooks** → укажите URL:
    `https://ваш-домен/api/pay/cryptobot/webhook`
 

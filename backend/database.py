@@ -49,6 +49,15 @@ CREATE_SOLUTIONS_TABLE_SQL = """CREATE TABLE IF NOT EXISTS solutions (
 # Решения хранятся 12 часов, затем удаляются
 SOLUTION_RETENTION_SECONDS = 12 * 3600
 
+CREATE_PROMO_CODES_TABLE_SQL = """CREATE TABLE IF NOT EXISTS promo_codes (
+    code TEXT PRIMARY KEY,
+    discount_percent INTEGER NOT NULL DEFAULT 0,
+    max_uses INTEGER NOT NULL DEFAULT 0,
+    used_count INTEGER NOT NULL DEFAULT 0,
+    expires_at REAL,
+    created_at REAL DEFAULT 0
+)"""
+
 
 # ─── Turso via libsql-client ─────────────────────────────────────
 # Uses HTTP for https:// (works with regional *.aws-*.turso.io)
@@ -97,6 +106,7 @@ async def init_db():
             _turso_execute("ALTER TABLE users ADD COLUMN pro_until REAL")
         except Exception:
             pass
+        _turso_execute(CREATE_PROMO_CODES_TABLE_SQL)
         return
     db = await aiosqlite.connect(DB_PATH)
     try:
@@ -118,8 +128,134 @@ async def init_db():
             await db.commit()
         except Exception:
             pass
+        await db.execute(CREATE_PROMO_CODES_TABLE_SQL)
+        await db.commit()
     finally:
         await db.close()
+
+
+async def create_promo_code(code: str, discount_percent: int, max_uses: int = 0, expires_at: float | None = None) -> None:
+    """Создаёт промокод. discount_percent 0–100, max_uses 0 = без лимита."""
+    code = (code or "").strip().upper()
+    if not code:
+        raise ValueError("Код не может быть пустым")
+    discount_percent = max(0, min(100, discount_percent))
+    now = time.time()
+    if _use_turso:
+        _turso_execute(
+            "INSERT INTO promo_codes (code, discount_percent, max_uses, used_count, expires_at, created_at) VALUES (?, ?, ?, 0, ?, ?)",
+            [code, discount_percent, max_uses, expires_at, now],
+        )
+        return
+    db = await aiosqlite.connect(DB_PATH)
+    try:
+        await db.execute(
+            "INSERT INTO promo_codes (code, discount_percent, max_uses, used_count, expires_at, created_at) VALUES (?, ?, ?, 0, ?, ?)",
+            (code, discount_percent, max_uses, expires_at, now),
+        )
+        await db.commit()
+    finally:
+        await db.close()
+
+
+async def get_promo_code(code: str) -> dict | None:
+    """Возвращает промокод по коду или None."""
+    code = (code or "").strip().upper()
+    if not code:
+        return None
+    if _use_turso:
+        rs = _turso_execute("SELECT code, discount_percent, max_uses, used_count, expires_at, created_at FROM promo_codes WHERE code = ?", [code])
+        if not rs["rows"]:
+            return None
+        r = rs["rows"][0]
+        return {"code": r[0], "discount_percent": r[1], "max_uses": r[2], "used_count": r[3], "expires_at": r[4], "created_at": r[5] or 0}
+    db = await aiosqlite.connect(DB_PATH)
+    try:
+        cur = await db.execute(
+            "SELECT code, discount_percent, max_uses, used_count, expires_at, created_at FROM promo_codes WHERE code = ?",
+            (code,),
+        )
+        row = await cur.fetchone()
+        if not row:
+            return None
+        return {"code": row[0], "discount_percent": row[1], "max_uses": row[2], "used_count": row[3], "expires_at": row[4], "created_at": row[5] or 0}
+    finally:
+        await db.close()
+
+
+async def validate_and_apply_promo(code: str) -> tuple[int, str | None]:
+    """
+    Проверяет промокод и возвращает (discount_percent, error_message).
+    Если ошибка — discount 0 и сообщение. При успехе — скидка и None.
+    Не увеличивает used_count — это делается при успешной оплате.
+    """
+    promo = await get_promo_code(code)
+    if not promo:
+        return (0, "Промокод не найден")
+    now = time.time()
+    if promo["expires_at"] and promo["expires_at"] < now:
+        return (0, "Срок действия промокода истёк")
+    if promo["max_uses"] > 0 and promo["used_count"] >= promo["max_uses"]:
+        return (0, "Промокод исчерпан")
+    return (promo["discount_percent"], None)
+
+
+async def increment_promo_used(code: str) -> None:
+    """Увеличивает счётчик использований промокода (после успешной оплаты)."""
+    code = (code or "").strip().upper()
+    if not code:
+        return
+    if _use_turso:
+        _turso_execute("UPDATE promo_codes SET used_count = used_count + 1 WHERE code = ?", [code])
+        return
+    db = await aiosqlite.connect(DB_PATH)
+    try:
+        await db.execute("UPDATE promo_codes SET used_count = used_count + 1 WHERE code = ?", (code,))
+        await db.commit()
+    finally:
+        await db.close()
+
+
+async def list_promo_codes() -> list[dict]:
+    """Список всех промокодов."""
+    if _use_turso:
+        rs = _turso_execute("SELECT code, discount_percent, max_uses, used_count, expires_at, created_at FROM promo_codes ORDER BY created_at DESC")
+        return [
+            {"code": r[0], "discount_percent": r[1], "max_uses": r[2], "used_count": r[3], "expires_at": r[4], "created_at": r[5] or 0}
+            for r in rs["rows"]
+        ]
+    db = await aiosqlite.connect(DB_PATH)
+    try:
+        cur = await db.execute(
+            "SELECT code, discount_percent, max_uses, used_count, expires_at, created_at FROM promo_codes ORDER BY created_at DESC"
+        )
+        rows = await cur.fetchall()
+        return [
+            {"code": r[0], "discount_percent": r[1], "max_uses": r[2], "used_count": r[3], "expires_at": r[4], "created_at": r[5] or 0}
+            for r in rows
+        ]
+    finally:
+        await db.close()
+
+
+async def delete_promo_code(code: str) -> bool:
+    """Удаляет промокод. Возвращает True если удалён."""
+    code = (code or "").strip().upper()
+    if not code:
+        return False
+    if _use_turso:
+        _turso_execute("DELETE FROM promo_codes WHERE code = ?", [code])
+        return True
+    db = await aiosqlite.connect(DB_PATH)
+    try:
+        await db.execute("DELETE FROM promo_codes WHERE code = ?", (code,))
+        await db.commit()
+        return True
+    finally:
+        await db.close()
+
+
+# ─── Turso via libsql-client
 
 
 async def save_solution(sid: str, content: str, telegram_id: int | None = None, task_text: str | None = None) -> None:

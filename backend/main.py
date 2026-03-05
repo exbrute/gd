@@ -27,6 +27,7 @@ from .database import (
     save_solution, get_and_delete_solution, list_solutions_for_user,
     delete_solutions_older_than, SOLUTION_RETENTION_SECONDS,
     user_has_active_pro, FREE_LIMIT,
+    create_promo_code, get_promo_code, validate_and_apply_promo, increment_promo_used, list_promo_codes, delete_promo_code,
 )
 
 load_dotenv()
@@ -227,6 +228,7 @@ class SolutionCreateResponse(BaseModel):
 
 class PayCreateRequest(BaseModel):
     method: Literal["sbp", "cryptobot"]
+    promo_code: Optional[str] = None
     init_data: Optional[str] = None
     auth_token: Optional[str] = None
 
@@ -733,23 +735,27 @@ async def get_solution_page(solution_id: str) -> HTMLResponse:
     return HTMLResponse(content=_build_solution_html(content, solution_id))
 
 
-def _pro_price_with_discount() -> str:
-    """Сумма Pro с учётом скидки (PRO_DISCOUNT_PERCENT)."""
+def _pro_price_with_discount(extra_discount_percent: float = 0) -> str:
+    """Сумма Pro с учётом скидки (PRO_DISCOUNT_PERCENT + дополнительная % от промокода)."""
     try:
         base = float(PRO_PRICE_AMOUNT.replace(",", "."))
     except (ValueError, TypeError):
         base = 299.0
-    amount = base * (1 - PRO_DISCOUNT_PERCENT / 100.0)
+    total_discount = min(100, PRO_DISCOUNT_PERCENT + extra_discount_percent)
+    amount = base * (1 - total_discount / 100.0)
     amount = max(0.01, round(amount, 2))
     return str(int(amount) if amount == int(amount) else amount)
 
 
-async def _crypto_pay_create_invoice(telegram_id: int) -> dict:
-    """Crypto Pay API createInvoice. Returns invoice dict or raises. Сумма с учётом скидки %."""
+async def _crypto_pay_create_invoice(telegram_id: int, promo_discount_percent: int = 0, promo_code: str | None = None) -> dict:
+    """Crypto Pay API createInvoice. Сумма с учётом PRO_DISCOUNT_PERCENT и промокода."""
     if not CRYPTO_PAY_API_TOKEN:
         raise HTTPException(status_code=503, detail="Crypto Pay не настроен. Добавьте CRYPTO_PAY_API_TOKEN.")
-    payload_data = json.dumps({"telegram_id": telegram_id, "product": "pro"})
-    amount = _pro_price_with_discount()
+    payload = {"telegram_id": telegram_id, "product": "pro"}
+    if promo_code:
+        payload["promo_code"] = promo_code
+    payload_data = json.dumps(payload)
+    amount = _pro_price_with_discount(extra_discount_percent=promo_discount_percent)
     body = {
         "currency_type": "fiat",
         "fiat": PRO_PRICE_CURRENCY,
@@ -845,8 +851,16 @@ async def pay_create(req: PayCreateRequest, request: Request):
     if req.method not in ("sbp", "cryptobot"):
         raise HTTPException(status_code=400, detail="Неизвестный способ оплаты")
 
+    promo_discount = 0
+    applied_promo = None
+    if (req.promo_code or "").strip():
+        promo_discount, err = await validate_and_apply_promo(req.promo_code.strip())
+        if err:
+            raise HTTPException(status_code=400, detail=err)
+        applied_promo = (req.promo_code or "").strip().upper()
+
     if req.method == "cryptobot":
-        result = await _crypto_pay_create_invoice(telegram_id)
+        result = await _crypto_pay_create_invoice(telegram_id, promo_discount_percent=promo_discount, promo_code=applied_promo)
         return {"ok": True, "url": result["url"]}
 
     # СБП — в разработке
@@ -887,6 +901,8 @@ async def crypto_pay_webhook(request: Request):
         telegram_id = pl.get("telegram_id")
         if telegram_id and pl.get("product") == "pro":
             await set_user_pro(int(telegram_id), True)
+        if pl.get("promo_code"):
+            await increment_promo_used(pl["promo_code"])
     return {"ok": True}
 
 
@@ -934,6 +950,39 @@ async def admin_reset_requests(telegram_id: int = Query(...), secret: str = Quer
     return {"ok": True}
 
 
+@app.get("/api/admin/promos")
+async def admin_list_promos(secret: str = Query(...)):
+    _require_admin(secret)
+    promos = await list_promo_codes()
+    return {"promos": promos}
+
+
+@app.post("/api/admin/promo")
+async def admin_create_promo(
+    secret: str = Query(...),
+    code: str = Query(...),
+    discount_percent: int = Query(..., ge=0, le=100),
+    max_uses: int = Query(0, ge=0),
+    expires_days: int | None = Query(None, ge=1),
+):
+    _require_admin(secret)
+    try:
+        expires_at = None
+        if expires_days is not None:
+            expires_at = time.time() + expires_days * 86400
+        await create_promo_code(code, discount_percent, max_uses=max_uses, expires_at=expires_at)
+        return {"ok": True, "code": code.strip().upper()}
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+@app.delete("/api/admin/promo")
+async def admin_delete_promo(code: str = Query(...), secret: str = Query(...)):
+    _require_admin(secret)
+    await delete_promo_code(code)
+    return {"ok": True}
+
+
 @app.get("/admin", response_class=HTMLResponse)
 async def admin_panel(secret: str = Query("")):
     if not ADMIN_SECRET or secret.strip() != ADMIN_SECRET.strip():
@@ -970,6 +1019,15 @@ tr:hover td{{background:rgba(249,115,22,.04)}}
 .act:hover{{border-color:#f97316;color:#f97316}}
 .act-danger{{color:#f87171}}
 .act-danger:hover{{border-color:#ef4444;color:#ef4444}}
+.section{{margin-top:32px}}
+.section h2{{font-size:16px;margin-bottom:12px;color:#94a3b8}}
+.promo-form{{display:flex;flex-wrap:wrap;gap:10px;align-items:flex-end;margin-bottom:16px}}
+.promo-form input{{padding:8px 12px;border-radius:8px;border:1px solid rgba(148,163,184,.2);background:rgba(15,23,42,.9);color:#e2e8f0;font-size:13px;width:120px}}
+.promo-form input[type="number"]{{width:70px}}
+.promo-form label{{font-size:11px;color:#64748b;display:block;margin-bottom:4px}}
+.promo-form .field{{display:flex;flex-direction:column}}
+.btn{{padding:8px 16px;border-radius:8px;border:none;background:linear-gradient(135deg,#f97316,#fb923c);color:#0f172a;font-weight:600;font-size:12px;cursor:pointer}}
+.btn:hover{{opacity:.95}}
 </style>
 </head>
 <body>
@@ -979,6 +1037,32 @@ tr:hover td{{background:rgba(249,115,22,.04)}}
 <table><thead><tr>
 <th>ID</th><th>Username</th><th>Имя</th><th>Статус</th><th>Запросов</th><th>Действия</th>
 </tr></thead><tbody id="tbody"></tbody></table>
+
+<div class="section">
+<h2>Промокоды</h2>
+<div class="promo-form">
+<div class="field">
+<label>Код</label>
+<input type="text" id="promoCode" placeholder="SALE20" maxlength="32">
+</div>
+<div class="field">
+<label>Скидка %</label>
+<input type="number" id="promoDiscount" value="20" min="0" max="100">
+</div>
+<div class="field">
+<label>Макс. использований (0=∞)</label>
+<input type="number" id="promoMaxUses" value="0" min="0">
+</div>
+<div class="field">
+<label>Срок (дней, пусто=∞)</label>
+<input type="number" id="promoExpires" placeholder="30" min="1">
+</div>
+<button class="btn" onclick="createPromo()">Создать промокод</button>
+</div>
+<table><thead><tr>
+<th>Код</th><th>Скидка</th><th>Использовано</th><th>Срок</th><th>Действия</th>
+</tr></thead><tbody id="promoTbody"></tbody></table>
+</div>
 
 <script>
 const S = "{secret}";
@@ -990,6 +1074,38 @@ async function load() {{
   allUsers = await r.json();
   renderStats();
   renderTable(allUsers);
+  loadPromos();
+}}
+
+async function loadPromos() {{
+  const r = await fetch(API + "/promos?secret=" + S);
+  const data = await r.json();
+  const promos = data.promos || [];
+  document.getElementById("promoTbody").innerHTML = promos.map(p => {{
+    const used = p.used_count + (p.max_uses ? ' / ' + p.max_uses : '');
+    const exp = p.expires_at ? new Date(p.expires_at * 1000).toLocaleDateString('ru') : '∞';
+    return '<tr><td><strong>' + p.code + '</strong></td><td>' + p.discount_percent + '%</td><td>' + used + '</td><td>' + exp + '</td><td><button class="act act-danger" onclick="deletePromo(\\'' + p.code + '\\')">Удалить</button></td></tr>';
+  }}).join('') || '<tr><td colspan="5">Нет промокодов</td></tr>';
+}}
+
+async function createPromo() {{
+  const code = document.getElementById("promoCode").value.trim();
+  const discount = parseInt(document.getElementById("promoDiscount").value, 10) || 0;
+  const maxUses = parseInt(document.getElementById("promoMaxUses").value, 10) || 0;
+  const expires = document.getElementById("promoExpires").value.trim();
+  if (!code) {{ alert('Введите код'); return; }}
+  let url = API + "/promo?secret=" + S + "&code=" + encodeURIComponent(code) + "&discount_percent=" + discount + "&max_uses=" + maxUses;
+  if (expires) url += "&expires_days=" + parseInt(expires, 10);
+  const r = await fetch(url, {{ method: "POST" }});
+  if (!r.ok) {{ const e = await r.json(); alert(e.detail || 'Ошибка'); return; }}
+  document.getElementById("promoCode").value = '';
+  loadPromos();
+}}
+
+async function deletePromo(code) {{
+  if (!confirm('Удалить промокод ' + code + '?')) return;
+  await fetch(API + "/promo?secret=" + S + "&code=" + encodeURIComponent(code), {{ method: "DELETE" }});
+  loadPromos();
 }}
 
 function renderStats() {{

@@ -438,6 +438,7 @@ const PAYMENT_METHODS = [
 
 function PaySection({ isPro, onRefresh }) {
   const [selectedMethod, setSelectedMethod] = useState(null);
+  const [promoCode, setPromoCode] = useState("");
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
   const [status, setStatus] = useState("");
@@ -457,6 +458,7 @@ function PaySection({ isPro, onRefresh }) {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           method: methodId,
+          promo_code: promoCode.trim() || undefined,
           init_data: initData || undefined,
           auth_token: getAuthToken() || undefined,
         }),
@@ -490,6 +492,18 @@ function PaySection({ isPro, onRefresh }) {
     <section className="pay-card glass">
       <h2 className="section-title">Оформление Pro</h2>
       <p className="pay-subtitle">Безлимит задач, приоритетная скорость, решение «как в тетради»</p>
+
+      <div className="pay-promo-wrap" style={{ marginBottom: 14 }}>
+        <label className="pay-promo-label" style={{ display: "block", fontSize: 12, color: "#9ca3af", marginBottom: 6 }}>Промокод (необязательно)</label>
+        <input
+          type="text"
+          placeholder="Введите код"
+          value={promoCode}
+          onChange={(e) => setPromoCode(e.target.value.toUpperCase())}
+          className="pay-promo-input"
+          style={{ width: "100%", padding: "10px 12px", borderRadius: 10, border: "1px solid rgba(148,163,184,.2)", background: "rgba(15,23,42,.9)", color: "#e2e8f0", fontSize: 14 }}
+        />
+      </div>
 
       <div className="pay-methods">
         {PAYMENT_METHODS.map((m) => (
