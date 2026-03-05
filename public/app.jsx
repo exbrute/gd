@@ -769,7 +769,7 @@ function AppShell() {
       const taskLabel = text.trim() ? text.trim() : "Задача по изображению";
       const solResp = await fetch("/api/solution", {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: authHeaders(),
         body: JSON.stringify({
           answer: answerText,
           task_text: taskLabel,
