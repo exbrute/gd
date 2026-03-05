@@ -742,6 +742,10 @@ function AppShell() {
     setLoading(true);
     setStatus("Генерирую решение...");
 
+    const initData = getInitData();
+    const authToken = getAuthToken();
+    const uid = telegramId;
+
     try {
       const resp = await fetch("/api/solve", {
         method: "POST",
@@ -750,9 +754,9 @@ function AppShell() {
           text: text.trim() || null,
           detail: mode === "short" ? "short" : "detailed",
           image_base64: imageBase64,
-          telegram_id: telegramId,
-          init_data: getInitData() || undefined,
-          auth_token: getAuthToken() || undefined,
+          telegram_id: uid,
+          init_data: initData || undefined,
+          auth_token: authToken || undefined,
         }),
       });
 
@@ -769,12 +773,17 @@ function AppShell() {
       const taskLabel = text.trim() ? text.trim() : "Задача по изображению";
       const solResp = await fetch("/api/solution", {
         method: "POST",
-        headers: authHeaders(),
+        headers: {
+          "Content-Type": "application/json",
+          "X-Telegram-Init-Data": initData || "",
+          "X-Auth-Token": authToken || "",
+        },
         body: JSON.stringify({
           answer: answerText,
           task_text: taskLabel,
-          init_data: getInitData() || undefined,
-          auth_token: getAuthToken() || undefined,
+          init_data: initData || undefined,
+          auth_token: authToken || undefined,
+          telegram_id: uid ?? undefined,
         }),
       });
       if (!solResp.ok) throw new Error("Не удалось создать страницу решения.");
