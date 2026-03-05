@@ -81,6 +81,9 @@ OPENAI_MODEL=gemini-2.0-flash
 CRYPTO_PAY_API_TOKEN=123456789:AAzQcZWQqQ...
 PRO_PRICE_AMOUNT=299
 PRO_PRICE_CURRENCY=RUB
+# Скидка на Pro в % (0–100): PRO_DISCOUNT_PERCENT=20
+# Длительность Pro при оплате/выдаче в днях (1–50000): PRO_SUBSCRIPTION_DAYS=30
+# Количество бесплатных активаций за период (1–50000): FREE_LIMIT=10
 ```
 
 3. Включите Webhooks в @CryptoBot: **Crypto Pay → My Apps → ваш app → Webhooks** → укажите URL:

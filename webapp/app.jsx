@@ -296,18 +296,38 @@ function SolveSection({
 
 const FREE_LIMIT = 10;
 
+function formatSolutionDate(ts) {
+  if (!ts) return "";
+  const d = new Date(ts * 1000);
+  return d.toLocaleString("ru-RU", { dateStyle: "short", timeStyle: "short" });
+}
+
 function ProfileSection({
   solvedCount,
   availableRequests,
+  freeLimit = 10,
   isPro,
   displayName,
   daysUntilUpdate,
   telegramId,
   debugInfo,
 }) {
-  const used = Math.min(solvedCount, FREE_LIMIT);
-  const remaining = isPro ? null : (typeof availableRequests === "number" ? availableRequests : FREE_LIMIT - used);
+  const [solutions, setSolutions] = useState([]);
+  const [solutionsLoading, setSolutionsLoading] = useState(false);
+  const limit = typeof freeLimit === "number" ? freeLimit : FREE_LIMIT;
+  const used = Math.min(solvedCount, limit);
+  const remaining = isPro ? null : (typeof availableRequests === "number" ? availableRequests : limit - used);
   const days = daysUntilUpdate ?? 0;
+
+  useEffect(() => {
+    if (!telegramId) return;
+    setSolutionsLoading(true);
+    fetch("/api/solutions", { headers: authHeaders() })
+      .then((r) => (r.ok ? r.json() : { solutions: [] }))
+      .then((data) => setSolutions(data.solutions || []))
+      .catch(() => setSolutions([]))
+      .finally(() => setSolutionsLoading(false));
+  }, [telegramId]);
 
   let hint = "Отправьте /start боту и нажмите «📚 Открыть TestAI» — счётчик привяжется автоматически.";
   if (debugInfo) {
@@ -354,13 +374,13 @@ function ProfileSection({
           </div>
           <div className="profile-limit-example">
             <div className="profile-limit-example-label">Пример:</div>
-            <div>Использовано {used} из {FREE_LIMIT}</div>
+            <div>Использовано {used} из {limit}</div>
             <div>Обновление через {days} {days === 1 ? "день" : days < 5 ? "дня" : "дней"}</div>
           </div>
           <div className="profile-limit-bar-wrap">
             <div
               className="profile-limit-bar-fill"
-              style={{ width: `${Math.min(100, (used / FREE_LIMIT) * 100)}%` }}
+              style={{ width: `${Math.min(100, limit ? (used / limit) * 100 : 0)}%` }}
             />
           </div>
         </div>
@@ -386,6 +406,27 @@ function ProfileSection({
           ? "У тебя безлимит — решай сколько хочешь!"
           : "10 запросов каждые 7 дней. Хочешь безлимит? Оформи Pro."}
       </div>
+
+      {telegramId && (
+        <div className="profile-history-block">
+          <h3 className="profile-history-title">История задач</h3>
+          {solutionsLoading ? (
+            <div className="profile-history-loading">Загрузка…</div>
+          ) : solutions.length === 0 ? (
+            <div className="profile-history-empty">Пока нет сохранённых решений. Решай задачи — они появятся здесь на 12 часов.</div>
+          ) : (
+            <ul className="profile-history-list">
+              {solutions.map((s, idx) => (
+                <li key={s.id} className="profile-history-item">
+                  <span className="profile-history-icon" aria-hidden data-type={idx % 3}>{["📐", "⚡", "📖"][idx % 3]}</span>
+                  <span className="profile-history-desc">{s.task_text || `Решение от ${formatSolutionDate(s.created_at)}`}</span>
+                  <a href={`/solution/${s.id}`} target="_blank" rel="noopener noreferrer" className="profile-history-btn">Посмотреть</a>
+                </li>
+              ))}
+            </ul>
+          )}
+        </div>
+      )}
     </section>
   );
 }
@@ -549,6 +590,7 @@ function AppShell() {
   const [telegramId, setTelegramId] = useState(null);
   const [displayName, setDisplayName] = useState("Ученик");
   const [debugInfo, setDebugInfo] = useState(null);
+  const [freeLimit, setFreeLimit] = useState(10);
 
   useEffect(() => {
     setMode(defaultDetailMode);
@@ -586,6 +628,7 @@ function AppShell() {
           setDisplayName(data.first_name || data.username || "Ученик");
           setDebugInfo(null);
           if (typeof data.days_until_update === "number") setDaysUntilUpdate(data.days_until_update);
+          if (typeof data.free_limit === "number") setFreeLimit(data.free_limit);
         }
       })
       .finally(() => {
@@ -617,6 +660,7 @@ function AppShell() {
           }
           setAvailableRequests(data.remaining ?? 10);
           setIsPro(data.is_pro || false);
+          if (typeof data.free_limit === "number") setFreeLimit(data.free_limit);
           if (data.first_name) setDisplayName(data.first_name);
           else if (data.username) setDisplayName(data.username);
           return data.telegram_id;
@@ -651,6 +695,7 @@ function AppShell() {
         }
         setAvailableRequests(data.remaining ?? 10);
         setIsPro(data.is_pro || false);
+        if (typeof data.free_limit === "number") setFreeLimit(data.free_limit);
         if (data.first_name) setDisplayName(data.first_name);
         else if (data.username) setDisplayName(data.username);
       })
@@ -721,11 +766,13 @@ function AppShell() {
       setSolvedCount((prev) => prev + 1);
       if (!isPro) setAvailableRequests((prev) => typeof prev === "number" ? Math.max(0, prev - 1) : prev);
 
+      const taskLabel = text.trim() ? text.trim() : "Задача по изображению";
       const solResp = await fetch("/api/solution", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           answer: answerText,
+          task_text: taskLabel,
           init_data: getInitData() || undefined,
           auth_token: getAuthToken() || undefined,
         }),
@@ -820,6 +867,7 @@ function AppShell() {
             <ProfileSection
               solvedCount={solvedCount}
               availableRequests={availableRequests}
+              freeLimit={freeLimit}
               isPro={isPro}
               displayName={displayName}
               daysUntilUpdate={daysUntilUpdate}

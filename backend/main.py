@@ -24,7 +24,9 @@ from pydantic import BaseModel
 from .database import (
     init_db, get_or_create_user, check_can_solve, increment_usage,
     get_all_users, set_user_pro, set_user_banned, reset_user_requests,
-    save_solution, get_and_delete_solution,
+    save_solution, get_and_delete_solution, list_solutions_for_user,
+    delete_solutions_older_than, SOLUTION_RETENTION_SECONDS,
+    user_has_active_pro, FREE_LIMIT,
 )
 
 load_dotenv()
@@ -39,6 +41,8 @@ CRYPTO_PAY_API_TOKEN = os.getenv("CRYPTO_PAY_API_TOKEN", "").strip()
 CRYPTO_PAY_BASE = "https://testnet-pay.crypt.bot" if os.getenv("CRYPTO_PAY_TESTNET", "").lower() in ("1", "true", "yes") else "https://pay.crypt.bot"
 PRO_PRICE_AMOUNT = os.getenv("PRO_PRICE_AMOUNT", "299").strip()
 PRO_PRICE_CURRENCY = os.getenv("PRO_PRICE_CURRENCY", "RUB").strip()  # RUB, USD, EUR, etc.
+# Скидка на Pro в % (0–100), любое значение
+PRO_DISCOUNT_PERCENT = max(0, min(100, float(os.getenv("PRO_DISCOUNT_PERCENT", "0").strip() or 0)))
 
 
 def validate_init_data(init_data: str) -> dict | None:
@@ -212,6 +216,7 @@ class SolveResponse(BaseModel):
 
 class SolutionCreateRequest(BaseModel):
     answer: str
+    task_text: Optional[str] = None  # текст задачи для отображения в истории
     init_data: Optional[str] = None
     auth_token: Optional[str] = None
 
@@ -323,8 +328,8 @@ async def api_me(request: Request, debug: bool = Query(False)):
 
     if not uid:
         resp = {"telegram_id": None, "first_name": "", "username": "", "is_pro": False,
-                "remaining": 10, "requests_used": 0, "allowed": True, "reason": "anonymous",
-                "days_until_update": 7}
+                "remaining": FREE_LIMIT, "requests_used": 0, "allowed": True, "reason": "anonymous",
+                "days_until_update": 7, "free_limit": FREE_LIMIT}
         if debug:
             resp["debug"] = {
                 "init_data_received": bool(init_data and len(init_data) > 0),
@@ -342,13 +347,14 @@ async def api_me(request: Request, debug: bool = Query(False)):
         "telegram_id": user["telegram_id"],
         "username": user["username"],
         "first_name": user["first_name"],
-        "is_pro": bool(user["is_pro"]),
+        "is_pro": user_has_active_pro(user),
         "is_banned": bool(user["is_banned"]),
         "requests_used": user["requests_used"],
         "remaining": limits["remaining"],
         "allowed": limits["allowed"],
         "reason": limits["reason"],
         "days_until_update": limits.get("days_until_update"),
+        "free_limit": limits.get("free_limit"),
     }
 
 
@@ -368,12 +374,13 @@ async def api_user(
         "telegram_id": user["telegram_id"],
         "username": user["username"],
         "first_name": user["first_name"],
-        "is_pro": bool(user["is_pro"]),
+        "is_pro": user_has_active_pro(user),
         "is_banned": bool(user["is_banned"]),
         "requests_used": user["requests_used"],
         "remaining": limits["remaining"],
         "allowed": limits["allowed"],
         "reason": limits["reason"],
+        "free_limit": limits.get("free_limit"),
     }
 
 
@@ -694,29 +701,59 @@ async def create_solution(req: SolutionCreateRequest, request: Request) -> Solut
     auth_token = _get_auth_token(request, req.auth_token)
     if not init_data and not auth_token:
         raise HTTPException(status_code=401, detail="Требуется авторизация")
+    tg_user = _resolve_user(request, init_data, auth_token)
+    telegram_id = tg_user.get("id") if tg_user else None
     sid = str(uuid.uuid4())
-    await save_solution(sid, (req.answer or "").strip())
+    await save_solution(sid, (req.answer or "").strip(), telegram_id=telegram_id, task_text=req.task_text)
     return SolutionCreateResponse(url=f"/solution/{sid}")
+
+
+@app.get("/api/solutions")
+async def api_list_solutions(request: Request):
+    """Список сохранённых решений пользователя за последние 12 часов (для личного кабинета)."""
+    init_data = _get_init_data(request)
+    auth_token = _get_auth_token(request)
+    if not init_data and not auth_token:
+        raise HTTPException(status_code=401, detail="Требуется авторизация")
+    tg_user = _resolve_user(request, init_data, auth_token)
+    telegram_id = tg_user.get("id")
+    if not telegram_id:
+        raise HTTPException(status_code=401, detail="Требуется авторизация")
+    await delete_solutions_older_than(SOLUTION_RETENTION_SECONDS)
+    items = await list_solutions_for_user(telegram_id)
+    return {"solutions": [{"id": x["id"], "created_at": x["created_at"], "task_text": x.get("task_text")} for x in items]}
 
 
 @app.get("/solution/{solution_id}", response_class=HTMLResponse)
 async def get_solution_page(solution_id: str) -> HTMLResponse:
-    """Отдаёт одноразовую HTML-страницу с решением (KaTeX рендерит формулы на клиенте)."""
+    """Отдаёт одноразовую HTML-страницу с решением. Решения хранятся 12 часов."""
     content = await get_and_delete_solution(solution_id)
     if not content:
-        raise HTTPException(status_code=404, detail="Страница просмотрена или не существует")
+        raise HTTPException(status_code=404, detail="Страница просмотрена, не существует или срок хранения истёк (12 ч)")
     return HTMLResponse(content=_build_solution_html(content, solution_id))
 
 
+def _pro_price_with_discount() -> str:
+    """Сумма Pro с учётом скидки (PRO_DISCOUNT_PERCENT)."""
+    try:
+        base = float(PRO_PRICE_AMOUNT.replace(",", "."))
+    except (ValueError, TypeError):
+        base = 299.0
+    amount = base * (1 - PRO_DISCOUNT_PERCENT / 100.0)
+    amount = max(0.01, round(amount, 2))
+    return str(int(amount) if amount == int(amount) else amount)
+
+
 async def _crypto_pay_create_invoice(telegram_id: int) -> dict:
-    """Crypto Pay API createInvoice. Returns invoice dict or raises."""
+    """Crypto Pay API createInvoice. Returns invoice dict or raises. Сумма с учётом скидки %."""
     if not CRYPTO_PAY_API_TOKEN:
         raise HTTPException(status_code=503, detail="Crypto Pay не настроен. Добавьте CRYPTO_PAY_API_TOKEN.")
     payload_data = json.dumps({"telegram_id": telegram_id, "product": "pro"})
+    amount = _pro_price_with_discount()
     body = {
         "currency_type": "fiat",
         "fiat": PRO_PRICE_CURRENCY,
-        "amount": PRO_PRICE_AMOUNT,
+        "amount": amount,
         "description": "Pro подписка — безлимит задач",
         "payload": payload_data,
         "expires_in": 3600,  # 1 час
@@ -783,10 +820,11 @@ async def api_auth_telegram(req: AuthTelegramRequest) -> dict:
         "telegram_id": uid,
         "username": u["username"],
         "first_name": u["first_name"],
-        "is_pro": bool(u["is_pro"]),
+        "is_pro": user_has_active_pro(u),
         "requests_used": u["requests_used"],
         "remaining": limits["remaining"],
         "days_until_update": limits.get("days_until_update"),
+        "free_limit": limits.get("free_limit"),
         "auth_token": req.token,
     }
 
@@ -865,13 +903,20 @@ def _require_admin(secret: str):
 async def admin_list_users(secret: str = Query(...)):
     _require_admin(secret)
     users = await get_all_users()
+    for u in users:
+        u["is_pro"] = user_has_active_pro(u)
     return users
 
 
 @app.post("/api/admin/pro")
-async def admin_set_pro(telegram_id: int = Query(...), value: bool = Query(True), secret: str = Query(...)):
+async def admin_set_pro(
+    telegram_id: int = Query(...),
+    value: bool = Query(True),
+    days: int | None = Query(None, ge=1, le=50000),  # длительность Pro в днях (1–50000)
+    secret: str = Query(...),
+):
     _require_admin(secret)
-    await set_user_pro(telegram_id, value)
+    await set_user_pro(telegram_id, value, days=days if value else None)
     return {"ok": True}
 
 
