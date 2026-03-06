@@ -296,6 +296,68 @@ function SolveSection({
 
 const FREE_LIMIT = 10;
 
+function PromoApplyBlock({ appliedPromoCode, onRefresh }) {
+  const [code, setCode] = useState("");
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState("");
+  const [success, setSuccess] = useState("");
+
+  const handleApply = async () => {
+    const c = code.trim().toUpperCase();
+    if (!c) {
+      setError("Введите промокод");
+      return;
+    }
+    setLoading(true);
+    setError("");
+    setSuccess("");
+    try {
+      const initData = getInitData();
+      const token = getAuthToken();
+      const resp = await fetch("/api/apply-promo", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ code: c, init_data: initData || undefined, auth_token: token || undefined }),
+      });
+      const data = await resp.json().catch(() => ({}));
+      if (!resp.ok) throw new Error(data.detail || "Ошибка");
+      setSuccess(data.message || "Промокод применён!");
+      setCode("");
+      if (onRefresh) onRefresh();
+    } catch (err) {
+      setError(err.message || "Не удалось применить промокод");
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  return (
+    <div className="profile-promo-apply">
+      {appliedPromoCode && (
+        <div className="status status--success" style={{ marginBottom: 10 }}>
+          <span className="status-dot" />
+          Применён: <strong>{appliedPromoCode}</strong> (будет использован при оплате)
+        </div>
+      )}
+      <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
+        <input
+          type="text"
+          placeholder="Введите промокод"
+          value={code}
+          onChange={(e) => setCode(e.target.value.toUpperCase())}
+          className="pay-promo-input"
+          style={{ flex: "1 1 120px", minWidth: 120, padding: "10px 12px", borderRadius: 10, border: "1px solid rgba(148,163,184,.2)", background: "rgba(15,23,42,.9)", color: "#e2e8f0", fontSize: 14 }}
+        />
+        <button type="button" className="primary-btn" onClick={handleApply} disabled={loading} style={{ padding: "10px 18px" }}>
+          {loading ? "Применяю…" : "Применить"}
+        </button>
+      </div>
+      {error && <div className="status status--error" style={{ marginTop: 8 }}><span className="status-dot" />{error}</div>}
+      {success && <div className="status status--success" style={{ marginTop: 8 }}><span className="status-dot" />{success}</div>}
+    </div>
+  );
+}
+
 function formatSolutionDate(ts) {
   if (!ts) return "";
   const d = new Date(ts * 1000);
@@ -311,6 +373,8 @@ function ProfileSection({
   daysUntilUpdate,
   telegramId,
   debugInfo,
+  appliedPromoCode,
+  onRefresh,
 }) {
   const [solutions, setSolutions] = useState([]);
   const [solutionsLoading, setSolutionsLoading] = useState(false);
@@ -322,7 +386,9 @@ function ProfileSection({
   useEffect(() => {
     if (!telegramId) return;
     setSolutionsLoading(true);
-    fetch("/api/solutions", { headers: authHeaders() })
+    const initData = getInitData();
+    const url = initData ? `/api/solutions?init_data=${encodeURIComponent(initData)}` : "/api/solutions";
+    fetch(url, { headers: authHeaders() })
       .then((r) => (r.ok ? r.json() : { solutions: [] }))
       .then((data) => setSolutions(data.solutions || []))
       .catch(() => setSolutions([]))
@@ -408,6 +474,13 @@ function ProfileSection({
       </div>
 
       {telegramId && (
+        <div className="profile-promo-block" style={{ marginTop: 16 }}>
+          <h3 className="profile-section-title">Промокод</h3>
+          <PromoApplyBlock appliedPromoCode={appliedPromoCode} onRefresh={onRefresh} />
+        </div>
+      )}
+
+      {telegramId && (
         <div className="profile-history-block">
           <h3 className="profile-history-title">История задач</h3>
           {solutionsLoading ? (
@@ -436,9 +509,8 @@ const PAYMENT_METHODS = [
   { id: "cryptobot", label: "CryptoBot", icon: "₿", desc: "Оплата криптовалютой в Telegram" },
 ];
 
-function PaySection({ isPro, onRefresh }) {
+function PaySection({ isPro, onRefresh, appliedPromoCode }) {
   const [selectedMethod, setSelectedMethod] = useState(null);
-  const [promoCode, setPromoCode] = useState("");
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
   const [status, setStatus] = useState("");
@@ -458,7 +530,6 @@ function PaySection({ isPro, onRefresh }) {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           method: methodId,
-          promo_code: promoCode.trim() || undefined,
           init_data: initData || undefined,
           auth_token: getAuthToken() || undefined,
         }),
@@ -493,17 +564,12 @@ function PaySection({ isPro, onRefresh }) {
       <h2 className="section-title">Оформление Pro</h2>
       <p className="pay-subtitle">Безлимит задач, приоритетная скорость, решение «как в тетради»</p>
 
-      <div className="pay-promo-wrap" style={{ marginBottom: 14 }}>
-        <label className="pay-promo-label" style={{ display: "block", fontSize: 12, color: "#9ca3af", marginBottom: 6 }}>Промокод (необязательно)</label>
-        <input
-          type="text"
-          placeholder="Введите код"
-          value={promoCode}
-          onChange={(e) => setPromoCode(e.target.value.toUpperCase())}
-          className="pay-promo-input"
-          style={{ width: "100%", padding: "10px 12px", borderRadius: 10, border: "1px solid rgba(148,163,184,.2)", background: "rgba(15,23,42,.9)", color: "#e2e8f0", fontSize: 14 }}
-        />
-      </div>
+      {appliedPromoCode && (
+        <div className="status status--success" style={{ marginBottom: 14 }}>
+          <span className="status-dot" />
+          Промокод <strong>{appliedPromoCode}</strong> будет применён к оплате
+        </div>
+      )}
 
       <div className="pay-methods">
         {PAYMENT_METHODS.map((m) => (
@@ -605,6 +671,7 @@ function AppShell() {
   const [displayName, setDisplayName] = useState("Ученик");
   const [debugInfo, setDebugInfo] = useState(null);
   const [freeLimit, setFreeLimit] = useState(10);
+  const [appliedPromoCode, setAppliedPromoCode] = useState(null);
 
   useEffect(() => {
     setMode(defaultDetailMode);
@@ -643,6 +710,7 @@ function AppShell() {
           setDebugInfo(null);
           if (typeof data.days_until_update === "number") setDaysUntilUpdate(data.days_until_update);
           if (typeof data.free_limit === "number") setFreeLimit(data.free_limit);
+          setAppliedPromoCode(data.applied_promo_code || null);
         }
       })
       .finally(() => {
@@ -677,6 +745,7 @@ function AppShell() {
           if (typeof data.free_limit === "number") setFreeLimit(data.free_limit);
           if (data.first_name) setDisplayName(data.first_name);
           else if (data.username) setDisplayName(data.username);
+          setAppliedPromoCode(data.applied_promo_code || null);
           return data.telegram_id;
         })
         .catch(() => { setAvailableRequests(10); return null; });
@@ -712,6 +781,7 @@ function AppShell() {
         if (typeof data.free_limit === "number") setFreeLimit(data.free_limit);
         if (data.first_name) setDisplayName(data.first_name);
         else if (data.username) setDisplayName(data.username);
+        setAppliedPromoCode(data.applied_promo_code || null);
       })
       .catch(() => {});
   }, []);
@@ -896,11 +966,13 @@ function AppShell() {
               daysUntilUpdate={daysUntilUpdate}
               telegramId={telegramId}
               debugInfo={debugInfo}
+              appliedPromoCode={appliedPromoCode}
+              onRefresh={refreshMe}
             />
           )}
 
           {effectiveTab === "pay" && (
-            <PaySection isPro={isPro} onRefresh={refreshMe} />
+            <PaySection isPro={isPro} onRefresh={refreshMe} appliedPromoCode={appliedPromoCode} />
           )}
 
           {effectiveTab === "settings" && (
@@ -927,5 +999,3 @@ function Root() {
 const container = document.getElementById("app-root");
 const root = ReactDOM.createRoot(container);
 root.render(<Root />);
-
-
