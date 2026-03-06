@@ -1024,6 +1024,16 @@ async def admin_panel(secret: str = Query("")):
     return HTMLResponse(_build_admin_html(secret))
 
 
+_PROMO_TYPE_SCRIPT = r"""
+document.getElementById('promoType').onchange = function() {
+  const t = this.value;
+  document.getElementById('fieldDiscount').style.display = t === 'discount' ? 'flex' : 'none';
+  document.getElementById('fieldProDays').style.display = t === 'free_pro' ? 'flex' : 'none';
+};
+document.getElementById('promoType').dispatchEvent(new Event('change'));
+"""
+
+
 def _build_admin_html(secret: str) -> str:
     return f"""<!DOCTYPE html>
 <html lang="ru">
@@ -1104,14 +1114,7 @@ tr:hover td{{background:rgba(249,115,22,.04)}}
 </div>
 <button class="btn" onclick="createPromo()">Создать</button>
 </div>
-<script>
-document.getElementById('promoType').onchange = function() {
-  const t = this.value;
-  document.getElementById('fieldDiscount').style.display = t === 'discount' ? 'flex' : 'none';
-  document.getElementById('fieldProDays').style.display = t === 'free_pro' ? 'flex' : 'none';
-};
-document.getElementById('promoType').dispatchEvent(new Event('change'));
-</script>
+<script>{_PROMO_TYPE_SCRIPT}</script>
 <table><thead><tr>
 <th>Код</th><th>Тип</th><th>Скидка/Дней</th><th>Использовано</th><th>Срок</th><th>Действия</th>
 </tr></thead><tbody id="promoTbody"></tbody></table>
