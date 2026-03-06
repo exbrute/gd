@@ -214,6 +214,7 @@ class SolveRequest(BaseModel):
 
 class SolveResponse(BaseModel):
     answer: str
+    solution_url: Optional[str] = None  # страница решения (сохраняется сразу с telegram_id)
 
 
 class SolutionCreateRequest(BaseModel):
@@ -497,7 +498,12 @@ async def solve(req: SolveRequest, request: Request) -> SolveResponse:
         answer = ((data.get("choices") or [{}])[0].get("message") or {}).get("content") or ""
         if req.telegram_id:
             await increment_usage(req.telegram_id)
-        return SolveResponse(answer=prepare_math_for_render(str(answer).strip()))
+        answer_rendered = prepare_math_for_render(str(answer).strip())
+        task_label = (req.text or "").strip() or "Задача по изображению"
+        sid = str(uuid.uuid4())
+        tid = req.telegram_id or (tg_user.get("id") if tg_user else None)
+        await save_solution(sid, answer_rendered, telegram_id=tid, task_text=task_label)
+        return SolveResponse(answer=answer_rendered, solution_url=f"/solution/{sid}")
 
     try:
         completion = client.chat.completions.create(
@@ -510,7 +516,12 @@ async def solve(req: SolveRequest, request: Request) -> SolveResponse:
     answer = completion.choices[0].message.content or ""
     if req.telegram_id:
         await increment_usage(req.telegram_id)
-    return SolveResponse(answer=prepare_math_for_render(answer.strip()))
+    answer_rendered = prepare_math_for_render(answer.strip())
+    task_label = (req.text or "").strip() or "Задача по изображению"
+    sid = str(uuid.uuid4())
+    tid = req.telegram_id or (tg_user.get("id") if tg_user else None)
+    await save_solution(sid, answer_rendered, telegram_id=tid, task_text=task_label)
+    return SolveResponse(answer=answer_rendered, solution_url=f"/solution/{sid}")
 
 
 def _normalize_math_delimiters(content: str) -> str:
@@ -732,7 +743,7 @@ async def api_list_solutions(request: Request):
     if not telegram_id:
         raise HTTPException(status_code=401, detail="Требуется авторизация")
     await delete_solutions_older_than(SOLUTION_RETENTION_SECONDS)
-    items = await list_solutions_for_user(telegram_id)
+    items = await list_solutions_for_user(int(telegram_id))
     return {"solutions": [{"id": x["id"], "created_at": x["created_at"], "task_text": x.get("task_text")} for x in items]}
 
 

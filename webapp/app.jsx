@@ -859,6 +859,11 @@ function AppShell() {
       setSolvedCount((prev) => prev + 1);
       if (!isPro) setAvailableRequests((prev) => typeof prev === "number" ? Math.max(0, prev - 1) : prev);
 
+      const solutionUrl = data.solution_url;
+      if (solutionUrl) {
+        window.location.href = solutionUrl;
+        return;
+      }
       const taskLabel = text.trim() ? text.trim() : "Задача по изображению";
       const solResp = await fetch("/api/solution", {
         method: "POST",
