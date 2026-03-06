@@ -387,7 +387,12 @@ function ProfileSection({
     if (!telegramId) return;
     setSolutionsLoading(true);
     const initData = getInitData();
-    const url = initData ? `/api/solutions?init_data=${encodeURIComponent(initData)}` : "/api/solutions";
+    const token = getAuthToken();
+    const params = new URLSearchParams();
+    if (initData) params.set("init_data", initData);
+    if (token) params.set("auth_token", token);
+    const qs = params.toString();
+    const url = qs ? `/api/solutions?${qs}` : "/api/solutions";
     fetch(url, { headers: authHeaders() })
       .then((r) => (r.ok ? r.json() : { solutions: [] }))
       .then((data) => setSolutions(data.solutions || []))

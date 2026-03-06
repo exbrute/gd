@@ -801,9 +801,10 @@ def _get_init_data(request: Request, body_init_data: str | None = None) -> str:
 
 
 def _get_auth_token(request: Request, body_token: str | None = None) -> str:
-    """Извлекает JWT auth token из заголовка или тела."""
+    """Извлекает JWT auth token из заголовка, query или тела."""
     h = request.headers.get("X-Auth-Token") or request.headers.get("x-auth-token")
-    return (h or "").strip() or (body_token or "").strip() or ""
+    q = request.query_params.get("auth_token") or request.query_params.get("tg_auth")
+    return (h or "").strip() or (q or "").strip() or (body_token or "").strip() or ""
 
 
 def _resolve_user(request: Request, init_data: str = "", auth_token: str = "") -> dict:
