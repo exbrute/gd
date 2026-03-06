@@ -28,6 +28,7 @@ from .database import (
     delete_solutions_older_than, SOLUTION_RETENTION_SECONDS,
     user_has_active_pro, FREE_LIMIT,
     create_promo_code, get_promo_code, validate_and_apply_promo, increment_promo_used, list_promo_codes, delete_promo_code,
+    apply_promo_for_user, get_user_applied_promo, set_user_applied_promo,
 )
 
 load_dotenv()
@@ -218,6 +219,7 @@ class SolveResponse(BaseModel):
 class SolutionCreateRequest(BaseModel):
     answer: str
     task_text: Optional[str] = None  # текст задачи для отображения в истории
+    telegram_id: Optional[int] = None  # fallback, если init_data/auth не определили пользователя
     init_data: Optional[str] = None
     auth_token: Optional[str] = None
 
@@ -228,7 +230,13 @@ class SolutionCreateResponse(BaseModel):
 
 class PayCreateRequest(BaseModel):
     method: Literal["sbp", "cryptobot"]
-    promo_code: Optional[str] = None
+    promo_code: Optional[str] = None  # опционально — можно использовать применённый в профиле
+    init_data: Optional[str] = None
+    auth_token: Optional[str] = None
+
+
+class ApplyPromoRequest(BaseModel):
+    code: str
     init_data: Optional[str] = None
     auth_token: Optional[str] = None
 
@@ -345,6 +353,7 @@ async def api_me(request: Request, debug: bool = Query(False)):
     first_name = tg_user.get("first_name", "")
     user = await get_or_create_user(int(uid), username, first_name)
     limits = await check_can_solve(int(uid))
+    applied = await get_user_applied_promo(int(uid))
     return {
         "telegram_id": user["telegram_id"],
         "username": user["username"],
@@ -357,6 +366,7 @@ async def api_me(request: Request, debug: bool = Query(False)):
         "reason": limits["reason"],
         "days_until_update": limits.get("days_until_update"),
         "free_limit": limits.get("free_limit"),
+        "applied_promo_code": applied,
     }
 
 
@@ -701,10 +711,10 @@ def _build_solution_html(content: str, solution_id: str = "") -> str:
 async def create_solution(req: SolutionCreateRequest, request: Request) -> SolutionCreateResponse:
     init_data = _get_init_data(request, req.init_data)
     auth_token = _get_auth_token(request, req.auth_token)
-    if not init_data and not auth_token:
+    if not init_data and not auth_token and not req.telegram_id:
         raise HTTPException(status_code=401, detail="Требуется авторизация")
     tg_user = _resolve_user(request, init_data, auth_token)
-    telegram_id = tg_user.get("id") if tg_user else None
+    telegram_id = (tg_user.get("id") if tg_user else None) or req.telegram_id
     sid = str(uuid.uuid4())
     await save_solution(sid, (req.answer or "").strip(), telegram_id=telegram_id, task_text=req.task_text)
     return SolutionCreateResponse(url=f"/solution/{sid}")
@@ -822,6 +832,7 @@ async def api_auth_telegram(req: AuthTelegramRequest) -> dict:
     uid = user["id"]
     u = await get_or_create_user(uid, user.get("username", ""), user.get("first_name", ""))
     limits = await check_can_solve(uid)
+    applied = await get_user_applied_promo(uid)
     return {
         "telegram_id": uid,
         "username": u["username"],
@@ -831,8 +842,27 @@ async def api_auth_telegram(req: AuthTelegramRequest) -> dict:
         "remaining": limits["remaining"],
         "days_until_update": limits.get("days_until_update"),
         "free_limit": limits.get("free_limit"),
+        "applied_promo_code": applied,
         "auth_token": req.token,
     }
+
+
+@app.post("/api/apply-promo")
+async def apply_promo(req: ApplyPromoRequest, request: Request):
+    """Применяет промокод из профиля. 1 промокод = 1 раз на аккаунт."""
+    init_data = _get_init_data(request, req.init_data)
+    auth_token = _get_auth_token(request, req.auth_token)
+    tg_user = _resolve_user(request, init_data, auth_token)
+    telegram_id = tg_user.get("id")
+    if not telegram_id:
+        raise HTTPException(status_code=401, detail="Требуется авторизация")
+    code = (req.code or "").strip()
+    if not code:
+        raise HTTPException(status_code=400, detail="Введите промокод")
+    ok, msg = await apply_promo_for_user(int(telegram_id), code)
+    if not ok:
+        raise HTTPException(status_code=400, detail=msg)
+    return {"ok": True, "message": msg}
 
 
 @app.post("/api/pay/create")
@@ -852,12 +882,12 @@ async def pay_create(req: PayCreateRequest, request: Request):
         raise HTTPException(status_code=400, detail="Неизвестный способ оплаты")
 
     promo_discount = 0
-    applied_promo = None
-    if (req.promo_code or "").strip():
-        promo_discount, err = await validate_and_apply_promo(req.promo_code.strip())
+    applied_promo = (req.promo_code or "").strip() or await get_user_applied_promo(telegram_id)
+    if applied_promo:
+        promo_discount, err = await validate_and_apply_promo(applied_promo, telegram_id=int(telegram_id))
         if err:
             raise HTTPException(status_code=400, detail=err)
-        applied_promo = (req.promo_code or "").strip().upper()
+        applied_promo = applied_promo.strip().upper()
 
     if req.method == "cryptobot":
         result = await _crypto_pay_create_invoice(telegram_id, promo_discount_percent=promo_discount, promo_code=applied_promo)
@@ -903,6 +933,7 @@ async def crypto_pay_webhook(request: Request):
             await set_user_pro(int(telegram_id), True)
         if pl.get("promo_code"):
             await increment_promo_used(pl["promo_code"])
+            await set_user_applied_promo(int(telegram_id), None)  # сбросить применённый промокод
     return {"ok": True}
 
 
@@ -961,7 +992,9 @@ async def admin_list_promos(secret: str = Query(...)):
 async def admin_create_promo(
     secret: str = Query(...),
     code: str = Query(...),
-    discount_percent: int = Query(..., ge=0, le=100),
+    promo_type: str = Query("discount", description="discount | free_pro"),
+    discount_percent: int = Query(0, ge=0, le=100),
+    pro_days: int = Query(0, ge=0, le=50000),
     max_uses: int = Query(0, ge=0),
     expires_days: int | None = Query(None, ge=1),
 ):
@@ -970,7 +1003,8 @@ async def admin_create_promo(
         expires_at = None
         if expires_days is not None:
             expires_at = time.time() + expires_days * 86400
-        await create_promo_code(code, discount_percent, max_uses=max_uses, expires_at=expires_at)
+        pt = "free_pro" if promo_type == "free_pro" else "discount"
+        await create_promo_code(code, discount_percent, max_uses=max_uses, expires_at=expires_at, promo_type=pt, pro_days=pro_days)
         return {"ok": True, "code": code.strip().upper()}
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
@@ -1046,21 +1080,40 @@ tr:hover td{{background:rgba(249,115,22,.04)}}
 <input type="text" id="promoCode" placeholder="SALE20" maxlength="32">
 </div>
 <div class="field">
+<label>Тип</label>
+<select id="promoType" style="padding:8px 12px;border-radius:8px;border:1px solid rgba(148,163,184,.2);background:rgba(15,23,42,.9);color:#e2e8f0;font-size:13px;width:110px">
+<option value="discount">Скидка %</option>
+<option value="free_pro">Бесплатный Pro</option>
+</select>
+</div>
+<div class="field" id="fieldDiscount">
 <label>Скидка %</label>
 <input type="number" id="promoDiscount" value="20" min="0" max="100">
 </div>
+<div class="field" id="fieldProDays" style="display:none">
+<label>Дней Pro</label>
+<input type="number" id="promoProDays" value="7" min="1" max="50000">
+</div>
 <div class="field">
-<label>Макс. использований (0=∞)</label>
+<label>Макс. использ. (0=∞)</label>
 <input type="number" id="promoMaxUses" value="0" min="0">
 </div>
 <div class="field">
 <label>Срок (дней, пусто=∞)</label>
 <input type="number" id="promoExpires" placeholder="30" min="1">
 </div>
-<button class="btn" onclick="createPromo()">Создать промокод</button>
+<button class="btn" onclick="createPromo()">Создать</button>
 </div>
+<script>
+document.getElementById('promoType').onchange = function() {
+  const t = this.value;
+  document.getElementById('fieldDiscount').style.display = t === 'discount' ? 'flex' : 'none';
+  document.getElementById('fieldProDays').style.display = t === 'free_pro' ? 'flex' : 'none';
+};
+document.getElementById('promoType').dispatchEvent(new Event('change'));
+</script>
 <table><thead><tr>
-<th>Код</th><th>Скидка</th><th>Использовано</th><th>Срок</th><th>Действия</th>
+<th>Код</th><th>Тип</th><th>Скидка/Дней</th><th>Использовано</th><th>Срок</th><th>Действия</th>
 </tr></thead><tbody id="promoTbody"></tbody></table>
 </div>
 
@@ -1084,17 +1137,21 @@ async function loadPromos() {{
   document.getElementById("promoTbody").innerHTML = promos.map(p => {{
     const used = p.used_count + (p.max_uses ? ' / ' + p.max_uses : '');
     const exp = p.expires_at ? new Date(p.expires_at * 1000).toLocaleDateString('ru') : '∞';
-    return '<tr><td><strong>' + p.code + '</strong></td><td>' + p.discount_percent + '%</td><td>' + used + '</td><td>' + exp + '</td><td><button class="act act-danger" onclick="deletePromo(\\'' + p.code + '\\')">Удалить</button></td></tr>';
-  }}).join('') || '<tr><td colspan="5">Нет промокодов</td></tr>';
+    const type = (p.promo_type || 'discount') === 'free_pro' ? 'Pro' : 'Скидка';
+    const val = (p.promo_type || 'discount') === 'free_pro' ? (p.pro_days || 0) + ' дн.' : (p.discount_percent || 0) + '%';
+    return '<tr><td><strong>' + p.code + '</strong></td><td>' + type + '</td><td>' + val + '</td><td>' + used + '</td><td>' + exp + '</td><td><button class="act act-danger" onclick="deletePromo(\\'' + p.code + '\\')">Удалить</button></td></tr>';
+  }}).join('') || '<tr><td colspan="6">Нет промокодов</td></tr>';
 }}
 
 async function createPromo() {{
   const code = document.getElementById("promoCode").value.trim();
+  const promoType = document.getElementById("promoType").value;
   const discount = parseInt(document.getElementById("promoDiscount").value, 10) || 0;
+  const proDays = parseInt(document.getElementById("promoProDays").value, 10) || 7;
   const maxUses = parseInt(document.getElementById("promoMaxUses").value, 10) || 0;
   const expires = document.getElementById("promoExpires").value.trim();
   if (!code) {{ alert('Введите код'); return; }}
-  let url = API + "/promo?secret=" + S + "&code=" + encodeURIComponent(code) + "&discount_percent=" + discount + "&max_uses=" + maxUses;
+  let url = API + "/promo?secret=" + S + "&code=" + encodeURIComponent(code) + "&promo_type=" + promoType + "&discount_percent=" + discount + "&pro_days=" + proDays + "&max_uses=" + maxUses;
   if (expires) url += "&expires_days=" + parseInt(expires, 10);
   const r = await fetch(url, {{ method: "POST" }});
   if (!r.ok) {{ const e = await r.json(); alert(e.detail || 'Ошибка'); return; }}

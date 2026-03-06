@@ -55,7 +55,15 @@ CREATE_PROMO_CODES_TABLE_SQL = """CREATE TABLE IF NOT EXISTS promo_codes (
     max_uses INTEGER NOT NULL DEFAULT 0,
     used_count INTEGER NOT NULL DEFAULT 0,
     expires_at REAL,
-    created_at REAL DEFAULT 0
+    created_at REAL DEFAULT 0,
+    promo_type TEXT NOT NULL DEFAULT 'discount',
+    pro_days INTEGER DEFAULT 0
+)"""
+
+CREATE_PROMO_CODE_USES_TABLE_SQL = """CREATE TABLE IF NOT EXISTS promo_code_uses (
+    telegram_id INTEGER NOT NULL,
+    code TEXT NOT NULL,
+    PRIMARY KEY (telegram_id, code)
 )"""
 
 
@@ -106,7 +114,20 @@ async def init_db():
             _turso_execute("ALTER TABLE users ADD COLUMN pro_until REAL")
         except Exception:
             pass
+        try:
+            _turso_execute("ALTER TABLE users ADD COLUMN applied_promo_code TEXT")
+        except Exception:
+            pass
         _turso_execute(CREATE_PROMO_CODES_TABLE_SQL)
+        try:
+            _turso_execute("ALTER TABLE promo_codes ADD COLUMN promo_type TEXT DEFAULT 'discount'")
+        except Exception:
+            pass
+        try:
+            _turso_execute("ALTER TABLE promo_codes ADD COLUMN pro_days INTEGER DEFAULT 0")
+        except Exception:
+            pass
+        _turso_execute(CREATE_PROMO_CODE_USES_TABLE_SQL)
         return
     db = await aiosqlite.connect(DB_PATH)
     try:
@@ -128,30 +149,56 @@ async def init_db():
             await db.commit()
         except Exception:
             pass
+        try:
+            await db.execute("ALTER TABLE users ADD COLUMN applied_promo_code TEXT")
+            await db.commit()
+        except Exception:
+            pass
         await db.execute(CREATE_PROMO_CODES_TABLE_SQL)
+        await db.commit()
+        try:
+            await db.execute("ALTER TABLE promo_codes ADD COLUMN promo_type TEXT DEFAULT 'discount'")
+            await db.commit()
+        except Exception:
+            pass
+        try:
+            await db.execute("ALTER TABLE promo_codes ADD COLUMN pro_days INTEGER DEFAULT 0")
+            await db.commit()
+        except Exception:
+            pass
+        await db.execute(CREATE_PROMO_CODE_USES_TABLE_SQL)
         await db.commit()
     finally:
         await db.close()
 
 
-async def create_promo_code(code: str, discount_percent: int, max_uses: int = 0, expires_at: float | None = None) -> None:
-    """Создаёт промокод. discount_percent 0–100, max_uses 0 = без лимита."""
+async def create_promo_code(
+    code: str,
+    discount_percent: int = 0,
+    max_uses: int = 0,
+    expires_at: float | None = None,
+    promo_type: str = "discount",
+    pro_days: int = 0,
+) -> None:
+    """Создаёт промокод. promo_type: 'discount' | 'free_pro'. Для free_pro — pro_days (1–50000)."""
     code = (code or "").strip().upper()
     if not code:
         raise ValueError("Код не может быть пустым")
+    promo_type = "free_pro" if promo_type == "free_pro" else "discount"
     discount_percent = max(0, min(100, discount_percent))
+    pro_days = max(0, min(50000, pro_days)) if promo_type == "free_pro" else 0
     now = time.time()
     if _use_turso:
         _turso_execute(
-            "INSERT INTO promo_codes (code, discount_percent, max_uses, used_count, expires_at, created_at) VALUES (?, ?, ?, 0, ?, ?)",
-            [code, discount_percent, max_uses, expires_at, now],
+            "INSERT INTO promo_codes (code, discount_percent, max_uses, used_count, expires_at, created_at, promo_type, pro_days) VALUES (?, ?, ?, 0, ?, ?, ?, ?)",
+            [code, discount_percent, max_uses, expires_at, now, promo_type, pro_days],
         )
         return
     db = await aiosqlite.connect(DB_PATH)
     try:
         await db.execute(
-            "INSERT INTO promo_codes (code, discount_percent, max_uses, used_count, expires_at, created_at) VALUES (?, ?, ?, 0, ?, ?)",
-            (code, discount_percent, max_uses, expires_at, now),
+            "INSERT INTO promo_codes (code, discount_percent, max_uses, used_count, expires_at, created_at, promo_type, pro_days) VALUES (?, ?, ?, 0, ?, ?, ?, ?)",
+            (code, discount_percent, max_uses, expires_at, now, promo_type, pro_days),
         )
         await db.commit()
     finally:
@@ -164,40 +211,137 @@ async def get_promo_code(code: str) -> dict | None:
     if not code:
         return None
     if _use_turso:
-        rs = _turso_execute("SELECT code, discount_percent, max_uses, used_count, expires_at, created_at FROM promo_codes WHERE code = ?", [code])
+        rs = _turso_execute("SELECT code, discount_percent, max_uses, used_count, expires_at, created_at, promo_type, pro_days FROM promo_codes WHERE code = ?", [code])
         if not rs["rows"]:
             return None
         r = rs["rows"][0]
-        return {"code": r[0], "discount_percent": r[1], "max_uses": r[2], "used_count": r[3], "expires_at": r[4], "created_at": r[5] or 0}
+        return {"code": r[0], "discount_percent": r[1], "max_uses": r[2], "used_count": r[3], "expires_at": r[4], "created_at": r[5] or 0, "promo_type": r[6] if len(r) > 6 else "discount", "pro_days": r[7] if len(r) > 7 else 0}
     db = await aiosqlite.connect(DB_PATH)
     try:
         cur = await db.execute(
-            "SELECT code, discount_percent, max_uses, used_count, expires_at, created_at FROM promo_codes WHERE code = ?",
+            "SELECT code, discount_percent, max_uses, used_count, expires_at, created_at, promo_type, pro_days FROM promo_codes WHERE code = ?",
             (code,),
         )
         row = await cur.fetchone()
         if not row:
             return None
-        return {"code": row[0], "discount_percent": row[1], "max_uses": row[2], "used_count": row[3], "expires_at": row[4], "created_at": row[5] or 0}
+        return {"code": row[0], "discount_percent": row[1], "max_uses": row[2], "used_count": row[3], "expires_at": row[4], "created_at": row[5] or 0, "promo_type": row[6] if len(row) > 6 else "discount", "pro_days": row[7] if len(row) > 7 else 0}
     finally:
         await db.close()
 
 
-async def validate_and_apply_promo(code: str) -> tuple[int, str | None]:
+async def check_promo_used_by_user(telegram_id: int, code: str) -> bool:
+    """Проверяет, использовал ли пользователь уже этот промокод (1 раз на 1 аккаунт)."""
+    code = (code or "").strip().upper()
+    if not code:
+        return True
+    if _use_turso:
+        rs = _turso_execute("SELECT 1 FROM promo_code_uses WHERE telegram_id = ? AND code = ?", [telegram_id, code])
+        return len(rs.get("rows", [])) > 0
+    db = await aiosqlite.connect(DB_PATH)
+    try:
+        cur = await db.execute("SELECT 1 FROM promo_code_uses WHERE telegram_id = ? AND code = ?", (telegram_id, code))
+        row = await cur.fetchone()
+        return row is not None
+    finally:
+        await db.close()
+
+
+async def record_promo_used_by_user(telegram_id: int, code: str) -> None:
+    """Записывает, что пользователь использовал промокод."""
+    code = (code or "").strip().upper()
+    if not code:
+        return
+    if _use_turso:
+        _turso_execute("INSERT OR IGNORE INTO promo_code_uses (telegram_id, code) VALUES (?, ?)", [telegram_id, code])
+        return
+    db = await aiosqlite.connect(DB_PATH)
+    try:
+        await db.execute("INSERT OR IGNORE INTO promo_code_uses (telegram_id, code) VALUES (?, ?)", (telegram_id, code))
+        await db.commit()
+    finally:
+        await db.close()
+
+
+async def get_user_applied_promo(telegram_id: int) -> str | None:
+    """Возвращает применённый (но ещё не использованный при оплате) промокод скидки."""
+    if _use_turso:
+        rs = _turso_execute("SELECT applied_promo_code FROM users WHERE telegram_id = ?", [telegram_id])
+        if rs.get("rows") and rs["rows"][0][0]:
+            return rs["rows"][0][0]
+        return None
+    db = await aiosqlite.connect(DB_PATH)
+    try:
+        cur = await db.execute("SELECT applied_promo_code FROM users WHERE telegram_id = ?", (telegram_id,))
+        row = await cur.fetchone()
+        return row[0] if row and row[0] else None
+    finally:
+        await db.close()
+
+
+async def set_user_applied_promo(telegram_id: int, code: str | None) -> None:
+    """Устанавливает применённый промокод скидки для пользователя."""
+    code = (code or "").strip().upper() or None
+    if _use_turso:
+        _turso_execute("UPDATE users SET applied_promo_code = ? WHERE telegram_id = ?", [code, telegram_id])
+        return
+    db = await aiosqlite.connect(DB_PATH)
+    try:
+        await db.execute("UPDATE users SET applied_promo_code = ? WHERE telegram_id = ?", (code, telegram_id))
+        await db.commit()
+    finally:
+        await db.close()
+
+
+async def apply_promo_for_user(telegram_id: int, code: str) -> tuple[bool, str]:
+    """
+    Применяет промокод для пользователя.
+    Возвращает (ok, message). 1 промокод = 1 раз на 1 аккаунт.
+    Для free_pro — сразу выдаёт Pro. Для discount — сохраняет для следующей оплаты.
+    """
+    promo = await get_promo_code(code)
+    if not promo:
+        return (False, "Промокод не найден")
+    if await check_promo_used_by_user(telegram_id, code):
+        return (False, "Вы уже использовали этот промокод")
+    now = time.time()
+    if promo.get("expires_at") and promo["expires_at"] < now:
+        return (False, "Срок действия промокода истёк")
+    if promo.get("max_uses", 0) > 0 and promo.get("used_count", 0) >= promo["max_uses"]:
+        return (False, "Промокод исчерпан")
+
+    promo_type = promo.get("promo_type") or "discount"
+    if promo_type == "free_pro":
+        days = max(1, min(50000, promo.get("pro_days") or 30))
+        await set_user_pro(telegram_id, True, days=days)
+        await record_promo_used_by_user(telegram_id, code)
+        await increment_promo_used(code)
+        return (True, f"Pro на {days} дней активирован!")
+    else:
+        await record_promo_used_by_user(telegram_id, code)
+        await set_user_applied_promo(telegram_id, code)
+        return (True, f"Скидка {promo.get('discount_percent', 0)}% будет применена при оплате")
+
+
+async def validate_and_apply_promo(code: str, telegram_id: int | None = None) -> tuple[int, str | None]:
     """
     Проверяет промокод и возвращает (discount_percent, error_message).
-    Если ошибка — discount 0 и сообщение. При успехе — скидка и None.
+    Для типа discount. Если telegram_id передан — проверяет, не использовал ли уже пользователь.
     Не увеличивает used_count — это делается при успешной оплате.
     """
     promo = await get_promo_code(code)
     if not promo:
         return (0, "Промокод не найден")
+    if promo.get("promo_type") == "free_pro":
+        return (0, "Этот промокод — бесплатный Pro. Примените его в профиле.")
     now = time.time()
-    if promo["expires_at"] and promo["expires_at"] < now:
+    if promo.get("expires_at") and promo["expires_at"] < now:
         return (0, "Срок действия промокода истёк")
-    if promo["max_uses"] > 0 and promo["used_count"] >= promo["max_uses"]:
+    if promo.get("max_uses", 0) > 0 and promo.get("used_count", 0) >= promo["max_uses"]:
         return (0, "Промокод исчерпан")
-    return (promo["discount_percent"], None)
+    if telegram_id and await check_promo_used_by_user(telegram_id, code):
+        return (0, "Вы уже использовали этот промокод")
+    return (promo.get("discount_percent", 0), None)
 
 
 async def increment_promo_used(code: str) -> None:
@@ -219,19 +363,19 @@ async def increment_promo_used(code: str) -> None:
 async def list_promo_codes() -> list[dict]:
     """Список всех промокодов."""
     if _use_turso:
-        rs = _turso_execute("SELECT code, discount_percent, max_uses, used_count, expires_at, created_at FROM promo_codes ORDER BY created_at DESC")
+        rs = _turso_execute("SELECT code, discount_percent, max_uses, used_count, expires_at, created_at, promo_type, pro_days FROM promo_codes ORDER BY created_at DESC")
         return [
-            {"code": r[0], "discount_percent": r[1], "max_uses": r[2], "used_count": r[3], "expires_at": r[4], "created_at": r[5] or 0}
+            {"code": r[0], "discount_percent": r[1], "max_uses": r[2], "used_count": r[3], "expires_at": r[4], "created_at": r[5] or 0, "promo_type": r[6] if len(r) > 6 else "discount", "pro_days": r[7] if len(r) > 7 else 0}
             for r in rs["rows"]
         ]
     db = await aiosqlite.connect(DB_PATH)
     try:
         cur = await db.execute(
-            "SELECT code, discount_percent, max_uses, used_count, expires_at, created_at FROM promo_codes ORDER BY created_at DESC"
+            "SELECT code, discount_percent, max_uses, used_count, expires_at, created_at, promo_type, pro_days FROM promo_codes ORDER BY created_at DESC"
         )
         rows = await cur.fetchall()
         return [
-            {"code": r[0], "discount_percent": r[1], "max_uses": r[2], "used_count": r[3], "expires_at": r[4], "created_at": r[5] or 0}
+            {"code": r[0], "discount_percent": r[1], "max_uses": r[2], "used_count": r[3], "expires_at": r[4], "created_at": r[5] or 0, "promo_type": r[6] if len(r) > 6 else "discount", "pro_days": r[7] if len(r) > 7 else 0}
             for r in rows
         ]
     finally:
